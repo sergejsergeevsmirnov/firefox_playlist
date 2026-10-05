@@ -1,0 +1,20 @@
+# Compiled output — never edit these directly
+dist/
+artifacts/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Test environment artifacts
+coverage/
+.test-profile/
+.test-extension/
+.test-artifacts/
+
+# PyInstaller build outputs (large binaries)
+native-host/build/
+native-host/build-onedir/
+
+# Lock file — don't edit manually
+pnpm-lock.yaml

@@ -1,0 +1,30 @@
+{
+  "name": "firefox-video-playlist",
+  "version": "0.11.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node scripts/build.mjs",
+    "test": "vitest run",
+    "check": "tsc --noEmit",
+    "lint:extension": "web-ext lint --source-dir dist --warnings-as-errors",
+    "package": "web-ext build --source-dir dist --artifacts-dir artifacts --filename video-playlist-{version}.zip --overwrite-dest",
+    "fixtures": "node scripts/fixtures.mjs",
+    "test:firefox": "node scripts/firefox-smoke.mjs"
+  },
+  "dependencies": {
+    "bgutils-js": "^4.0.3",
+    "dashjs": "^5.0.3",
+    "hls.js": "^1.6.13",
+    "youtubei.js": "^18.1.0"
+  },
+  "devDependencies": {
+    "@types/firefox-webext-browser": "^120.0.4",
+    "@types/node": "^24.0.0",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.4",
+    "web-ext": "^8.9.0"
+  }
+}

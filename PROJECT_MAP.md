@@ -1,0 +1,216 @@
+# PROJECT MAP — Видеоочередь
+
+## Обзор
+
+Firefox MV3-расширение. Собирает видео со страниц в локальный плейлист с воспроизведением через встроенный плеер или экспортом в VLC.
+
+**Версия:** 0.11.0  
+**Целевой Firefox:** 140+  
+
+---
+
+## Граф зависимостей модулей
+
+```
+model.ts          ← чистые типы, никаких зависимостей
+  ↑
+core.ts           ← model.ts, media-policy.ts
+  ↑
+capture-policy.ts ← (независимый)
+media-policy.ts   ← (независимый)
+task-pool.ts      ← (независимый)
+ui.ts             ← model.ts
+quick-filters.ts  ← model.ts
+
+manifests.ts      ← core.ts
+discovery.ts      ← core.ts, model.ts, media-policy.ts
+
+rutube.ts         ← core.ts, model.ts
+ok.ts             ← core.ts, model.ts
+dzen.ts           ← core.ts, model.ts
+vk.ts             ← core.ts, model.ts, capture-policy.ts
+native.ts         ← (независимый — HTTP-клиент)
+youtube.ts        ← core.ts, model.ts, capture-policy.ts
+
+resolver.ts       ← core.ts, model.ts, media-policy.ts, manifests.ts, discovery.ts,
+                     rutube.ts, ok.ts, dzen.ts, vk.ts, youtube.ts, native.ts, capture-policy.ts
+
+background.ts     ← core.ts, model.ts, resolver.ts, task-pool.ts, media-policy.ts,
+                     discovery.ts, quick-filters.ts, dzen.ts, ok.ts, capture-policy.ts, native.ts
+
+content.ts        ← discovery.ts, core.ts, capture-policy.ts, model.ts
+
+sidebar.ts        ← core.ts, model.ts, ui.ts, quick-filters.ts, dzen.ts, capture-policy.ts
+                     style.css, compact.css
+
+player.ts         ← core.ts, model.ts, ui.ts
+                     hls.js, dashjs
+                     style.css
+```
+
+---
+
+## Реализация по провайдерам
+
+### Rutube (`src/rutube.ts`)
+- Определение: `rutubeOptionsUrl()` — проверяет hostname `rutube.ru`, извлекает 32-символьный ID
+- Запрос: `GET https://rutube.ru/api/play/options/{id}/?format=json`
+- Парсинг: `rutubeStreams()` — берёт `video_balancer` из JSON
+- Разрешения: `https://*.rutube.ru/*`, `https://*.rtbcdn.ru/*`
+- Статус: **работает без вкладок**
+
+### OK.ru (`src/ok.ts`)
+- Определение: `okPageUrl()` — hostname `ok.ru`, путь `/video/{id}`
+- Запрос: `GET https://ok.ru/video/{id}` (HTML страница)
+- Парсинг: `okStreams()` — `[data-options]` → `flashvars.metadata` → JSON → `hlsManifestUrl` / `videos[]`
+- Разрешения: `https://ok.ru/*`, `https://*.okcdn.ru/*`
+- Статус: **работает без вкладок**
+
+### Яндекс.Дзен (`src/dzen.ts`)
+- Определение: `dzenPageUrl()` — hostname `dzen.ru`, путь `/video/watch/{24-символьный hex}`
+- Парсинг: `dzenStreams()` — JSON-блок `_params` из HTML, поле `ssrData.videoMetaResponse.video.oneVideoStreams`
+- Путь 1 (без вкладки): `fetchText(dzenPageUrl)` → `dzenStreams()`
+- Путь 2 (фоновая вкладка, fallback): `readDzenPlayer()` → `inspectDzenPlayer()` — открывает вкладку `active: false`, ждёт загрузки, читает `<script>` с `videoMetaResponse`
+- Разрешения: `https://dzen.ru/*`, `https://*.okcdn.ru/*`
+- **Задача**: путь 1 иногда не работает (JS-рендер); путь 2 открывает вкладку — нужно реализовать без физического открытия вкладки
+
+### VK / VKVideo (`src/vk.ts`)
+- Определение: `vkIdentity()` — hostname `vkvideo.ru` / `vk.com`, путь `/video-{id}` или `/clip{id}`
+- **Путь 1 (API, без вкладки)**: `readVkStreams()` — POST `https://vk.com/al_video.php` с `act=show`
+  - Парсинг `vkStreams()`: обходит JSON `payload[1]` — ищет URL в строках
+- **Путь 2 (фоновая вкладка)**: `readVkPlayer()` — открывает вкладку `active: false`, слушает `webRequest.onHeadersReceived` на `*.okcdn.ru`, триггерит `video.play()`, читает `performance.getEntriesByType`
+- Флаг `vkForeground`: вкладка становится активной (для случаев с авторизацией)
+- Разрешения: `https://*.vkvideo.ru/*`, `https://*.vk.com/*`, `https://*.okcdn.ru/*`, `https://*.vkuser.net/*`
+
+### YouTube (`src/youtube.ts`, `src/native.ts`)
+- Определение: `youtubeIdentity()` — youtube.com, youtu.be, youtube-nocookie.com, /shorts/, /embed/, /live/, /v/
+- **Путь 1 (приоритет, yt-dlp мост)**: `nativePing()` → `nativeDownload()` — POST `http://127.0.0.1:8765/download`; вариант `{format: 'native'}` заменяется на `{format: 'file', url: 'http://127.0.0.1:8765/{id}.mp4'}` после скачивания
+- **Путь 2 (youtubei.js + PoToken)**: `readYoutubePlayer()` → открывает фоновую вкладку, внедряет скрипт в MAIN world, дешифрует `n`/`sig`, генерирует PoToken через `bgutils-js`
+- **Путь 3 (fallback)**: YouTube embed `https://www.youtube.com/embed/{id}` — формат `youtube`, воспроизводится как iframe
+
+### Vimeo
+- Определение: `vimeoIdentity()` — vimeo.com, player.vimeo.com
+- Механизм: content-скрипт читает `performance.getEntriesByType('resource')`, фильтрует CDN-URL `*.vimeocdn.com` с `/playlist.m3u8` или `master.m3u8` или `.mpd`
+- `isVimeoChildManifest()` — исключает дочерние манифесты `/media.m3u8`
+
+### Яндекс.Видео (`src/discovery.ts` → `discoverYandex()`)
+- Определение: `isYandexVideo()` — yandex.ru/video, ya.ru/video и аналоги
+- Механизм: парсинг DOM-карточек `[data-video]`, `.serp-item`, `.VideoCard` и т.д.
+- Возвращает `Candidate` с `discovery: 'catalog'` и пустым `variants[]` — URL страницы источника, проверяется отдельно
+
+### Общий механизм (`src/discovery.ts`)
+- `discoverGeneric()`: `<video>` теги, `<a href>` с медиа-URL, `og:video` meta, JSON-LD `VideoObject`, `discoverEmbedded()`
+- `discoverEmbedded()`: парсинг `<script>` JSON без eval — ключи `contentUrl`, `hlsUrl`, `dashUrl`, `sources`, `files`
+
+---
+
+## Поток данных
+
+```
+Страница → content.ts
+  ├─ discoverYandex() / discoverGeneric()     DOM-кандидаты
+  ├─ inspectVkResources()                     CDN-пробы (HEAD)
+  └─ sendMessage('discovered', candidates[])
+       ↓
+background.ts → onMessage('discovered')
+  ├─ cleanCandidate()                         Санитизация
+  ├─ addCandidate() → mergeCandidate()        Дедупликация и merge
+  ├─ schedule(id, tab, token)                 Постановка в очередь проверки
+  └─ TaskPool (2 параллельных, browserCheckPool=1 для вкладочных)
+       ↓
+resolver.ts → resolveVideo()
+  ├─ rutubeStreams / okStreams / dzenStreams    HTTP-парсинг
+  ├─ readVkStreams / readVkPlayer              VK API / вкладка
+  ├─ readYoutubePlayer / nativeDownload       YouTube / yt-dlp
+  └─ resolveStreams() → probeFile() / parseHls() / parseDash()
+       ↓
+background.ts → mutate() → state.videos[id] обновляется
+  └─ enqueue() → state.queue.push(id) если matches() === 'match'
+       ↓
+sidebar.ts ← getState() (polling при каждом refresh)
+player.ts  ← getState() (при старте и после действий)
+```
+
+---
+
+## Состояние (State)
+
+```typescript
+State {
+  version: 1,
+  videos: Record<id, Video>,   // все найденные видео
+  queue: string[],              // упорядоченный список id для воспроизведения
+  filters: Filters,             // активные фильтры
+  repeat, shuffle, autoplay,
+  dismissed: string[]           // исключённые id (не попадают в очередь повторно)
+}
+
+Video {
+  id, sourceUrl, title, thumbnail, duration, variants: Variant[],
+  status: 'checking'|'ready'|'site'|'error',
+  requiredOrigins: string[],    // нужны доп. разрешения
+  selectedVariant,              // key активного варианта
+  position, watched, addedAt
+}
+```
+
+Хранение: `browser.storage.local` (State) + `browser.storage.session` (Sessions).
+
+---
+
+## Плеер (`src/player.ts`)
+
+Поддерживает форматы:
+- `file` — нативный `<video src>`
+- `hls` — hls.js
+- `dash` — dash.js (MediaPlayer)
+- `youtube` — `<iframe>` embed
+- `native` — ожидает замены на `file` после скачивания
+
+Fallback: при ошибке воспроизведения — retry через `resolver.ts`, затем переход к следующему.
+
+---
+
+## Нативный хост
+
+```
+native-host/
+├── video_host.py          HTTP-сервер (127.0.0.1:8765)
+├── video_host.bat         Запуск через bat
+├── videoqueue_host.json   Native messaging manifest (NM не используется — HTTP мост)
+├── register.ps1           Регистрация в реестре HKCU
+├── build/                 PyInstaller build output
+└── build-onedir/          PyInstaller onedir build
+```
+
+**Важно**: `videoqueue_host.json` зарегистрирован в реестре, но фактически мост работает по HTTP, не через Native Messaging API Firefox.
+
+---
+
+## Тесты
+
+```
+tests/
+├── core.test.ts           mergeCandidate, matches, enqueue, exportPlaylist
+├── discovery.test.ts      discoverGeneric, discoverYandex
+├── resolver.test.ts       resolveVideo (mock fetch)
+├── rutube.test.ts         rutubeStreams
+├── ok.test.ts             okStreams
+├── dzen.test.ts           dzenStreams
+├── vk.test.ts             vkStreams
+├── vk-browser.test.ts     readVkPlayer (Firefox integration)
+├── youtube.test.ts        youtubeIdentity
+├── manifests.test.ts      parseHls, parseDash
+├── capture-policy.test.ts identity-функции
+├── revision.test.ts       restoreState, version migration
+├── task-pool.test.ts      TaskPool
+└── fixtures/              HTML/MPD для тестов
+```
+
+---
+
+## Известные ограничения / Открытые задачи
+
+1. **Дзен без вкладок**: `fetchText` иногда не находит JSON (SSR не отрабатывает). Нужно: либо найти API-эндпоинт Дзена без HTML-рендера, либо открывать вкладку только в фоне (`active: false`) без визуального появления.
+2. **YouTube без моста**: `readYoutubePlayer` открывает вкладку — медленно и заметно пользователю.
+3. **VK с авторизацией**: без cookies AJAX-запрос может вернуть код `3` (требует входа).

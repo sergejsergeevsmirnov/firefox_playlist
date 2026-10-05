@@ -1,0 +1,31 @@
+/* Sidebar-only layout. The standalone player retains its spacious controls. */
+.compact-toolbar { position: sticky; top: 0; z-index: 5; padding: 12px; display: grid; gap: 8px; background: #19251d; }
+.compact-toolbar button { font-size: 12px; padding: 9px 8px; }
+.compact-toolbar #collect { font-size: 13px; }
+.site-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; }
+.site-line .truncate { min-width: 0; }
+#frame-access:empty { display: none; }
+#frame-access button { padding: 5px 8px; font-size: 11px; }
+.compact-main { padding: 12px; gap: 14px; }
+.compact-filters { padding: 12px; border-radius: 10px; }
+.compact-filters form { gap: 9px; }
+.compact-filters .field-pair { gap: 8px; }
+.compact-filters label { gap: 3px; }
+.compact-filters input, .compact-filters select { padding: 7px 8px; }
+.preset-actions { display: grid; grid-template-columns: .8fr 1.1fr 1.1fr; gap: 5px; }
+.preset-actions button { font-size: 10px; padding: 7px 3px; }
+.list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.list-toolbar [role=tablist] { display: flex; gap: 3px; min-width: 0; }
+.list-toolbar button { font-size: 11px; padding: 7px 8px; white-space: nowrap; }
+.list-toolbar [role=tab] { background: transparent; border-color: transparent; }
+.list-toolbar [aria-selected=true] { border-color: var(--border); background: #24332a; color: var(--accent); }
+.compact-main .video-card { padding: 10px; border-radius: 9px; }
+.compact-main .card-heading { margin-bottom: 6px; gap: 7px; }
+.compact-main h3 { font-size: 12px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.compact-main .card-actions { margin-top: 7px; gap: 6px; }
+.compact-main .card-actions button { padding: 4px 6px; }
+.compact-main .video-card details { margin-top: 5px; }
+.compact-main .empty { padding: 15px; margin: 0; }
+[hidden] { display: none !important; }
+.vk-foreground-option { display: flex; align-items: center; gap: 6px; }
+.vk-foreground-option input { width: auto; margin: 0; }

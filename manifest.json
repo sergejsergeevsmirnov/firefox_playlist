@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Видеоочередь",
+  "version": "0.11.0",
+  "description": "Видео со страниц и Яндекс Видео: фильтры, очередь, плеер и экспорт для VLC.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "video-playlist@local.extension",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  },
+  "permissions": ["storage", "scripting", "activeTab", "tabs", "webRequest", "webNavigation"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "scripts": ["background.js"] },
+  "web_accessible_resources": [
+    { "resources": ["pot.js"], "matches": ["https://*.youtube.com/*"] }
+  ],
+  "action": { "default_title": "Открыть видеоочередь" },
+  "sidebar_action": { "default_title": "Видеоочередь", "default_panel": "sidebar.html" },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src http: https:; img-src 'self' http: https: data:; media-src http: https: blob:; worker-src 'self'"
+  }
+}

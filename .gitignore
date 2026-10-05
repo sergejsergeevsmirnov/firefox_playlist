@@ -1,0 +1,10 @@
+node_modules/
+dist/
+artifacts/
+coverage/
+.test-profile/
+.test-extension/
+.test-artifacts/
+.pnpm-store/
+native-host/build/
+native-host/build-onedir/

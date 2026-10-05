@@ -1,0 +1,10 @@
+{
+  "name": "videoqueue_host",
+  "description": "Видеоочередь: загрузка YouTube-потоков через yt-dlp",
+  "path": "C:\\Users\\Admin\\Documents\\firefox_videoplaylist DeepSeek\\native-host\\build-onedir\\video_host\\video_host.exe",
+  "type": "stdio",
+  "allowed_extensions": [
+    "video-playlist@local.extension",
+    "8854bf95-507f-462c-ab11-935f1bc05af4"
+  ]
+}
