@@ -31,7 +31,8 @@ firefox_videoplaylist/
 │   ├── dzen.ts                    Дзен: парсинг _params JSON + fallback вкладка
 │   ├── vk.ts                      VK: AJAX al_video.php + fallback вкладка
 │   ├── youtube.ts                 YouTube: youtubei.js + PoToken (фоновая вкладка)
-│   ├── native.ts                  yt-dlp HTTP-мост: ping, download, cleanup
+│   ├── native.ts                  yt-dlp HTTP-мост: ping, status, download, cleanup,
+│   │                               nativeGetProxy(), nativeSetProxy()
 │   │
 │   ├── resolver.ts                resolveVideo() — центральный диспетчер
 │   │                               Выбирает провайдер → resolveStreams() → probeFile()
@@ -50,6 +51,7 @@ firefox_videoplaylist/
 ├── native-host/                   Нативный yt-dlp мост (исходники)
 │   ├── video_host.py              Исходник Python HTTP-сервера (127.0.0.1:8765)
 │   │                               GET /status, POST /download, POST /cleanup, GET /<file>
+│   │                               GET /proxy, POST /proxy — чтение/запись прокси
 │   ├── video_host.bat             BAT-обёртка ручного запуска через Python
 │   ├── videoqueue_host.json       Native Messaging manifest (зарегистрирован в реестре,
 │   │                               но мост работает по HTTP — NM не используется)

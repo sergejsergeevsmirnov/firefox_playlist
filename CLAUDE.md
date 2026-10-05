@@ -47,7 +47,7 @@ pnpm run package    # zip → artifacts/
 - **`src/media-policy.ts`** — `isPreviewUrl()`, `isShortPreview()`
 - **`src/discovery.ts`** — `discoverGeneric()`, `discoverYandex()`, `discoverEmbedded()`, `rankSourceCandidates()`
 - **`src/task-pool.ts`** — `TaskPool(concurrency)`: очередь async-задач с ограничением параллелизма
-- **`src/native.ts`** — HTTP-клиент yt-dlp моста: `nativePing()`, `nativeDownload()`, `nativeCleanup()`
+- **`src/native.ts`** — HTTP-клиент yt-dlp моста: `nativePing()`, `nativeStatus()`, `nativeDownload()`, `nativeCleanup()`, `nativeGetProxy()`, `nativeSetProxy()`
 - **`src/ui.ts`** — DOM-хелперы `$`, `element`, `button`, `send`, `notify`
 - **`src/quick-filters.ts`** — пресеты качества/длительности, encode/decode фильтров
 
@@ -58,8 +58,10 @@ pnpm run package    # zip → artifacts/
   - `POST /download {url, id}` → скачивает через yt-dlp, возвращает `{ok, url}` (локальный файл)
   - `POST /cleanup {id}` → удаляет кэш
   - `GET /<file>` → раздаёт файл с Range-support и CORS
+  - `GET /proxy` → `{ok, proxy}` — читает текущее значение прокси из `config.json`
+  - `POST /proxy {proxy}` → сохраняет прокси в `config.json`
 - Кэш: `%TEMP%\video-queue-cache\`
-- Прокси: `config.json` рядом с exe → ключ `proxy` (по умолчанию `http://127.0.0.1:2080`)
+- Прокси: `config.json` рядом с exe → ключ `proxy` (по умолчанию `http://127.0.0.1:2080`); меняется через UI в боковой панели
 - Статус в UI: строка `yt-dlp: ✓/✗` внизу боковой панели
 
 ### Развёрнутый хост (production)

@@ -138,11 +138,11 @@ player.ts  ← getState() (при старте и после действий)
 ```typescript
 State {
   version: 1,
-  videos: Record<id, Video>,   // все найденные видео
+  videos: Record<id, Video>,   // все найденные видео (очищается при clearQueue)
   queue: string[],              // упорядоченный список id для воспроизведения
   filters: Filters,             // активные фильтры
   repeat, shuffle, autoplay,
-  dismissed: string[]           // исключённые id (не попадают в очередь повторно)
+  dismissed: string[]           // исключённые id; очищается при clearQueue (полный сброс)
 }
 
 Video {
@@ -176,6 +176,8 @@ Fallback: при ошибке воспроизведения — retry чере�
 ```
 native-host/                         Исходники (в репозитории)
 ├── video_host.py          исходник HTTP-сервера (127.0.0.1:8765)
+│                           GET /status, POST /download, POST /cleanup, GET /<file>
+│                           GET /proxy, POST /proxy  — чтение/запись прокси в config.json
 ├── video_host.bat         bat-обёртка запуска через Python
 ├── videoqueue_host.json   Native Messaging manifest (для реестра; NM не используется)
 ├── register.ps1           Регистрация пути exe в реестре HKCU
@@ -185,7 +187,7 @@ native-host/                         Исходники (в репозитори
 C:\Users\Admin\AppData\Roaming\videoqueue-host\   Развёрнутый хост (production)
 ├── video_host.exe         скомпилированный EXE (PyInstaller)
 ├── yt-dlp.exe             автономный yt-dlp
-├── config.json            настройки прокси {"proxy": "http://127.0.0.1:2080"}
+├── config.json            настройки прокси {"proxy": "..."} — редактируется через UI
 └── _internal/             зависимости PyInstaller onedir
 ```
 
