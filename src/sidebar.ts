@@ -166,7 +166,7 @@ $<HTMLInputElement>('#filter-file').onchange = async () => {
   try { if (file) { if (file.size > 16000) throw new Error('Файл фильтра слишком большой'); const f = decodeFilter(await file.text()); populate(f); await applyFilters(); notify('Фильтр загружен и применён.'); } }
   catch (error) { notifyError(error); } finally { input.value = ''; }
 };
-$('#clear-queue').onclick = () => { void send('clearQueue').then(async () => { await refresh(); notify('Очередь очищена. Новые найденные видео продолжат добавляться.'); }).catch(notifyError); };
+$('#clear-queue').onclick = () => { void send('clearQueue').then(async () => { await refresh(); notify('Очередь и найденные видео очищены. Сбор начнётся заново.'); }).catch(notifyError); };
 function showList(name: 'queue' | 'found'): void {
   for (const id of ['queue', 'found']) { $(`#${id}`).hidden = id !== name; $(`#${id}-tab`).setAttribute('aria-selected', String(id === name)); }
 }

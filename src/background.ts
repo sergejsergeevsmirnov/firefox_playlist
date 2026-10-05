@@ -277,10 +277,14 @@ async function handleUI(message: { type: string; [key: string]: any }): Promise<
       for (const video of Object.values(state.videos).sort((a, b) => a.addedAt - b.addedAt)) enqueue(state, video, suppressed);
     }); return { ok: true };
     case 'clearQueue': await mutate(() => {
-      state.dismissed = [...new Set([...(state.dismissed ?? []), ...Object.keys(state.videos)])];
-      for (const session of Object.values(sessions)) session.suppressed = [...new Set([...session.suppressed, ...session.ids])];
-      state.queue = [];
-    }); return { ok: true };
+      for (const check of runningChecks.values()) check.controller.abort();
+      runningChecks.clear();
+      state.videos = {}; state.queue = []; state.dismissed = [];
+      for (const tabId of Object.keys(sessions)) {
+        const old = sessions[Number(tabId)];
+        sessions[Number(tabId)] = { ...newSession(old.url), vkForeground: old.vkForeground };
+      }
+    }); activeDownloads.clear(); return { ok: true };
     case 'reapply': await mutate(() => {
       const removed = state.queue.filter(id => matches(state.videos[id], state.filters) !== 'match');
       for (const session of Object.values(sessions)) session.suppressed = [...new Set([...session.suppressed, ...removed])];
