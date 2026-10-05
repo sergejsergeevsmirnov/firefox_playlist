@@ -50,6 +50,8 @@ pnpm run package    # zip → artifacts/
 - **`src/native.ts`** — HTTP-клиент yt-dlp моста: `nativePing()`, `nativeStatus()`, `nativeDownload()`, `nativeCleanup()`, `nativeGetProxy()`, `nativeSetProxy()`
 - **`src/ui.ts`** — DOM-хелперы `$`, `element`, `button`, `send`, `notify`
 - **`src/quick-filters.ts`** — пресеты качества/длительности, encode/decode фильтров
+- **`src/style.css`** — общие стили + layout плеера (см. «UI / Скролл-поведение»)
+- **`src/compact.css`** — компактные стили боковой панели + sticky-механика вкладок
 
 ## Нативный хост (yt-dlp мост)
 
@@ -93,6 +95,36 @@ Invoke-WebRequest http://127.0.0.1:8765/status
 ```
 
 **Важно**: `python.exe` из Microsoft Store — это заглушка, не работает. Настоящий Python: путь выше.
+
+## UI / Скролл-поведение
+
+### Боковая панель (`sidebar.ts` + `compact.css`)
+
+Шапка (`.compact-toolbar`) — `position: sticky; top: 0` — всегда видна.
+
+Блок фильтров (`.compact-filters`) прокручивается вместе со страницей.
+
+Вкладки «Очередь / Найдено / ▶ Плеер» (`.list-toolbar`) прилипают под шапкой:
+- CSS: `position: sticky; top: var(--toolbar-height, 0px); z-index: 4`
+- JS (`sidebar.ts`): `ResizeObserver` на `.compact-toolbar` обновляет `--toolbar-height` на `:root` при каждом изменении высоты шапки (шапка динамическая: кнопки могут появляться и исчезать).
+
+После прилипания вкладок скроллируются только карточки видео.
+
+### Страница плеера (`player.ts` + `style.css`)
+
+Шапка `<header>` («Ваш следующий кадр») прокручивается как обычный элемент.
+
+`main.player-layout` — `position: sticky; top: 0; height: 100vh; overflow: hidden` — вся двухколоночная панель прилипает к экрану как единица, как только шапка уходит вверх.
+
+Внутри sticky-контейнера:
+- **Левая колонка** `.player-stage` — `overflow-y: auto`; скроллится внутри себя.
+  - `.player-current` (заголовок ролика) — `position: sticky; top: 0` внутри `.player-stage`: title прилипает к верху колонки, видео прокручивается под ним.
+- **Правая колонка** `.player-aside` — `display: flex; flex-direction: column; overflow: hidden`.
+  - `#playlist` — `overflow-y: auto; flex: 1`: список воспроизведения скроллируется независимо.
+
+На мобильном (≤900px) `.player-layout` возвращается в `position: static; height: auto; overflow: visible`, обе колонки — в нормальный поток.
+
+**Важно:** `position: sticky` на grid-элементе не работает, если родительский grid растягивает его до высоты контейнера (`align-items: stretch`). Именно поэтому sticky поставлен на сам `main.player-layout`, а не на его дочерние колонки.
 
 ## Принятые решения
 

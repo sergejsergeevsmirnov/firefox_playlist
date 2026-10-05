@@ -209,3 +209,8 @@ async function saveProxy(): Promise<void> {
 }
 $('#proxy-save').onclick = () => { void saveProxy().catch(notifyError); };
 proxyInput.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); void saveProxy().catch(notifyError); } };
+
+const toolbarEl = document.querySelector<HTMLElement>('.compact-toolbar')!;
+const updateToolbarHeight = () => document.documentElement.style.setProperty('--toolbar-height', `${toolbarEl.offsetHeight}px`);
+new ResizeObserver(updateToolbarHeight).observe(toolbarEl);
+updateToolbarHeight();

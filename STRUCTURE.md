@@ -45,8 +45,15 @@ firefox_videoplaylist/
 │   ├── player.ts                  Плеер: hls.js, dash.js, <video>, <iframe>
 │   │
 │   ├── pot.ts                     Вспомогательный скрипт PoToken (web_accessible)
-│   ├── style.css                  Основные стили
-│   └── compact.css                Компактные стили для sidebar
+│   ├── style.css                  Основные стили + sticky-layout плеера:
+│   │                               main.player-layout → sticky 100vh-контейнер;
+│   │                               .player-stage → overflow-y:auto (внутренний скролл);
+│   │                               .player-current → sticky title внутри stage;
+│   │                               .player-aside/.playlist → flex + overflow-y:auto
+│   └── compact.css                Компактные стили sidebar + sticky-вкладки:
+│                                   .compact-toolbar → sticky top:0;
+│                                   .list-toolbar → sticky top:var(--toolbar-height);
+│                                   --toolbar-height задаётся через ResizeObserver в sidebar.ts
 │
 ├── native-host/                   Нативный yt-dlp мост (исходники)
 │   ├── video_host.py              Исходник Python HTTP-сервера (127.0.0.1:8765)

@@ -14,7 +14,7 @@
 .compact-filters input, .compact-filters select { padding: 7px 8px; }
 .preset-actions { display: grid; grid-template-columns: .8fr 1.1fr 1.1fr; gap: 5px; }
 .preset-actions button { font-size: 10px; padding: 7px 3px; }
-.list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 0; position: sticky; top: var(--toolbar-height, 0px); z-index: 4; background: #111816; padding: 4px 0 10px; }
 .list-toolbar [role=tablist] { display: flex; gap: 3px; min-width: 0; }
 .list-toolbar button { font-size: 11px; padding: 7px 8px; white-space: nowrap; }
 .list-toolbar [role=tab] { background: transparent; border-color: transparent; }

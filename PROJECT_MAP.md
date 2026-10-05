@@ -169,6 +169,26 @@ Video {
 
 Fallback: при ошибке воспроизведения — retry через `resolver.ts`, затем переход к следующему.
 
+### Layout страницы плеера (после скролла за шапку)
+
+```
+<header>           ← прокручивается обычно
+<main.player-layout>  ← position:sticky; top:0; height:100vh — прилипает
+  ┌──────────────────────────┬──────────────────┐
+  │  .player-stage           │  .player-aside   │
+  │  overflow-y:auto         │  flex-column     │
+  │  ┌────────────────────┐  │  overflow:hidden │
+  │  │ .player-current    │  │  ┌────────────┐ │
+  │  │ sticky top:0       │  │  │.section-   │ │
+  │  │ (title прилипает)  │  │  │heading     │ │
+  │  ├────────────────────┤  │  ├────────────┤ │
+  │  │ <video>            │  │  │ #playlist  │ │
+  │  │ .player-toolbar    │  │  │ overflow-y │ │
+  │  │ ... (скроллятся)   │  │  │ :auto      │ │
+  │  └────────────────────┘  │  └────────────┘ │
+  └──────────────────────────┴──────────────────┘
+```
+
 ---
 
 ## Нативный хост
