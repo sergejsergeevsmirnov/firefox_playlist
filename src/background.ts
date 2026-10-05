@@ -8,7 +8,7 @@ import { quickFilters } from './quick-filters';
 import { dzenPageUrl } from './dzen';
 import { okPageUrl } from './ok';
 import { captureOrigins, sourceIdentity, isVimeoChildManifest, vkIdentity, youtubeIdentity } from './capture-policy';
-import { nativeDownload, nativeCleanup, nativePing, nativeStatus } from './native';
+import { nativeDownload, nativeCleanup, nativePing, nativeStatus, nativeGetProxy, nativeSetProxy } from './native';
 
 let state: State = emptyState();
 let sessions: Record<number, Session> = {};
@@ -339,6 +339,8 @@ async function handleUI(message: { type: string; [key: string]: any }): Promise<
     }
     case 'nativeCleanup': nativeCleanup(message.id || undefined); activeDownloads.clear(); return { ok: true };
     case 'nativeStatus': try { return { ok: true, ...(await nativeStatus()) }; } catch (error) { return { ok: true, available: false, error: error instanceof Error ? error.message : String(error) }; }
+    case 'proxyGet': try { return { ok: true, proxy: await nativeGetProxy() }; } catch (error) { return { ok: true, proxy: '', error: error instanceof Error ? error.message : String(error) }; }
+    case 'proxySet': try { await nativeSetProxy(String(message.proxy ?? '')); return { ok: true }; } catch (error) { throw new Error(error instanceof Error ? error.message : String(error)); }
     default: throw new Error('Неизвестная команда');
   }
 }

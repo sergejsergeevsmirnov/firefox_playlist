@@ -131,6 +131,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == '/status':
             self._json(200, {'ok': True, 'cache': CACHE_DIR})
             return
+        if parsed.path == '/proxy':
+            self._json(200, {'ok': True, 'proxy': proxy_value()})
+            return
         name = parsed.path.lstrip('/')
         if not name or '/' in name or '\\' in name or name.startswith('.'):
             self.send_error(404)
@@ -210,6 +213,23 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == '/cleanup':
             vid = str(body.get('id', ''))
             self._json(200, run_cleanup(vid))
+            return
+        if parsed.path == '/proxy':
+            value = str(body.get('proxy', '')).strip()
+            cfg = os.path.join(app_dir(), 'config.json')
+            try:
+                existing = {}
+                try:
+                    with open(cfg, 'r', encoding='utf-8') as f:
+                        existing = json.load(f)
+                except Exception:
+                    pass
+                existing['proxy'] = value
+                with open(cfg, 'w', encoding='utf-8') as f:
+                    json.dump(existing, f, ensure_ascii=False, indent=2)
+                self._json(200, {'ok': True, 'proxy': value})
+            except Exception as exc:
+                self._json(500, {'ok': False, 'error': str(exc)})
             return
         self._json(404, {'ok': False, 'error': 'unknown endpoint'})
 

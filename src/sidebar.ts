@@ -18,6 +18,7 @@ $('#app').innerHTML = `
   </header>
   <main class="compact-main">
     <section class="surface compact-filters">
+      <label class="proxy-label">Прокси для yt-dlp<span class="proxy-row"><input id="proxy-input" type="text" placeholder="http://127.0.0.1:2080" autocomplete="off" spellcheck="false"><button id="proxy-save" type="button">✓</button></span></label>
       <form id="filters">
         <div class="field-pair"><label>Качество<select name="minHeight"><option value="">Любое</option></select></label><label>Длительность<select name="maxDuration"><option value="">∞ — любая</option></select></label></div>
         <label>Сайты<input name="host" placeholder="example.org, video.example.com"></label>
@@ -196,3 +197,15 @@ void refresh().catch(notifyError);
 void send<{ available?: boolean; error?: string }>('nativeStatus').then(res => {
   $('#version').textContent += res.available ? ' · yt-dlp: ✓' : ` · yt-dlp: ✗ (${res.error || '?'})`;
 }).catch(error => { $('#version').textContent += ` · yt-dlp: ✗ (${error instanceof Error ? error.message : String(error)})`; });
+
+const proxyInput = $<HTMLInputElement>('#proxy-input');
+void send<{ ok: boolean; proxy?: string }>('proxyGet').then(res => {
+  if (res.proxy !== undefined) proxyInput.value = res.proxy;
+}).catch(() => {});
+async function saveProxy(): Promise<void> {
+  const value = proxyInput.value.trim();
+  await send('proxySet', { proxy: value });
+  notify(value ? `Прокси сохранён: ${value}` : 'Прокси отключён (прямое подключение).');
+}
+$('#proxy-save').onclick = () => { void saveProxy().catch(notifyError); };
+proxyInput.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); void saveProxy().catch(notifyError); } };

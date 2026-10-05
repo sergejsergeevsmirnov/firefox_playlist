@@ -49,6 +49,27 @@ export async function nativeStatus(): Promise<{ available: boolean; error?: stri
   }
 }
 
+export async function nativeGetProxy(): Promise<string> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch(`${BASE}/proxy`, { signal: controller.signal });
+      const json = (await response.json().catch(() => ({}))) as { ok: boolean; proxy?: string };
+      return json.proxy ?? '';
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return '';
+  }
+}
+
+export async function nativeSetProxy(value: string): Promise<void> {
+  const res = await post<{ ok: boolean; error?: string }>('/proxy', { proxy: value }, 5000);
+  if (!res.ok) throw new Error(res.error || 'Не удалось сохранить прокси.');
+}
+
 export async function nativeDownload(url: string, id: string): Promise<{ url: string }> {
   const res = await post<{ ok: boolean; url?: string; error?: string }>('/download', { url, id }, 15 * 60 * 1000);
   if (!res.ok || typeof res.url !== 'string') throw new Error(res.error || 'Загрузка через yt-dlp не удалась.');
