@@ -174,16 +174,32 @@ Fallback: при ошибке воспроизведения — retry чере�
 ## Нативный хост
 
 ```
-native-host/
-├── video_host.py          HTTP-сервер (127.0.0.1:8765)
-├── video_host.bat         Запуск через bat
-├── videoqueue_host.json   Native messaging manifest (NM не используется — HTTP мост)
-├── register.ps1           Регистрация в реестре HKCU
-├── build/                 PyInstaller build output
-└── build-onedir/          PyInstaller onedir build
+native-host/                         Исходники (в репозитории)
+├── video_host.py          исходник HTTP-сервера (127.0.0.1:8765)
+├── video_host.bat         bat-обёртка запуска через Python
+├── videoqueue_host.json   Native Messaging manifest (для реестра; NM не используется)
+├── register.ps1           Регистрация пути exe в реестре HKCU
+├── build/                 PyInstaller --onefile (gitignored)
+└── build-onedir/          PyInstaller --onedir (gitignored)
+
+C:\Users\Admin\AppData\Roaming\videoqueue-host\   Развёрнутый хост (production)
+├── video_host.exe         скомпилированный EXE (PyInstaller)
+├── yt-dlp.exe             автономный yt-dlp
+├── config.json            настройки прокси {"proxy": "http://127.0.0.1:2080"}
+└── _internal/             зависимости PyInstaller onedir
 ```
 
-**Важно**: `videoqueue_host.json` зарегистрирован в реестре, но фактически мост работает по HTTP, не через Native Messaging API Firefox.
+**Планировщик Windows** «VideoQueue yt-dlp bridge»:
+- Триггер: вход в систему
+- Действие: `C:\Users\Admin\AppData\Roaming\videoqueue-host\video_host.exe`
+- Статус: Ready
+
+**Важно**: мост работает по HTTP (`127.0.0.1:8765`), не через Native Messaging API Firefox.  
+`videoqueue_host.json` зарегистрирован в реестре как заглушка (для совместимости), но не используется.
+
+**Python на машине**: `python.exe` из Microsoft Store — заглушка, не работает.  
+Рабочий Python 3.12.14: `C:\Users\Admin\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe`  
+Используется только для ручного запуска скрипта — EXE в production Python не требует.
 
 ---
 

@@ -47,14 +47,22 @@ firefox_videoplaylist/
 │   ├── style.css                  Основные стили
 │   └── compact.css                Компактные стили для sidebar
 │
-├── native-host/                   Нативный yt-dlp мост
-│   ├── video_host.py              Python HTTP-сервер (127.0.0.1:8765)
+├── native-host/                   Нативный yt-dlp мост (исходники)
+│   ├── video_host.py              Исходник Python HTTP-сервера (127.0.0.1:8765)
 │   │                               GET /status, POST /download, POST /cleanup, GET /<file>
-│   ├── video_host.bat             BAT-обёртка запуска
-│   ├── videoqueue_host.json       Native Messaging manifest (для реестра)
-│   ├── register.ps1               Регистрация в HKCU реестра Windows
-│   ├── build/                     PyInstaller --onefile output
-│   └── build-onedir/              PyInstaller --onedir output (используется)
+│   ├── video_host.bat             BAT-обёртка ручного запуска через Python
+│   ├── videoqueue_host.json       Native Messaging manifest (зарегистрирован в реестре,
+│   │                               но мост работает по HTTP — NM не используется)
+│   ├── register.ps1               Регистрация пути EXE в HKCU реестра
+│   ├── build/                     PyInstaller --onefile output (gitignored)
+│   └── build-onedir/              PyInstaller --onedir output (gitignored)
+│
+│   [развёрнутый хост — НЕ в репозитории]
+│   C:\Users\Admin\AppData\Roaming\videoqueue-host\
+│   ├── video_host.exe             Скомпилированный EXE (запускает планировщик Windows)
+│   ├── yt-dlp.exe                 Автономный yt-dlp
+│   ├── config.json                Прокси: {"proxy": "http://127.0.0.1:2080"}
+│   └── _internal/                 Зависимости PyInstaller
 │
 ├── scripts/                       Инструменты сборки и тестирования
 │   ├── build.mjs                  Vite build + post-processing

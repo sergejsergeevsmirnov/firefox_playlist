@@ -53,15 +53,44 @@ pnpm run package    # zip → artifacts/
 
 ## Нативный хост (yt-dlp мост)
 
-- **`native-host/video_host.py`** — Python HTTP-сервер `127.0.0.1:8765`
+- **`native-host/video_host.py`** — исходник Python HTTP-сервера `127.0.0.1:8765`
   - `GET /status` → `{ok: true}`
   - `POST /download {url, id}` → скачивает через yt-dlp, возвращает `{ok, url}` (локальный файл)
   - `POST /cleanup {id}` → удаляет кэш
   - `GET /<file>` → раздаёт файл с Range-support и CORS
 - Кэш: `%TEMP%\video-queue-cache\`
-- Прокси: `native-host/config.json` → ключ `proxy` (по умолчанию `http://127.0.0.1:2080`)
-- Автозапуск: задача планировщика Windows «VideoQueue yt-dlp bridge» (`python.exe video_host.py`)
+- Прокси: `config.json` рядом с exe → ключ `proxy` (по умолчанию `http://127.0.0.1:2080`)
 - Статус в UI: строка `yt-dlp: ✓/✗` внизу боковой панели
+
+### Развёрнутый хост (production)
+
+Планировщик Windows запускает **скомпилированный EXE**, а не Python-скрипт:
+
+| | |
+|---|---|
+| Путь EXE | `C:\Users\Admin\AppData\Roaming\videoqueue-host\video_host.exe` |
+| yt-dlp | `C:\Users\Admin\AppData\Roaming\videoqueue-host\yt-dlp.exe` |
+| Конфиг прокси | `C:\Users\Admin\AppData\Roaming\videoqueue-host\config.json` |
+| Задача планировщика | «VideoQueue yt-dlp bridge», триггер: вход в Windows |
+
+EXE собран через PyInstaller — не требует Python на машине.
+
+### Ручной запуск (если EXE не стартовал после входа)
+
+```powershell
+# Проверить, слушает ли порт
+netstat -ano | Select-String ":8765"
+
+# Запустить через Python DSH-рантайма (Python 3.12.14)
+Start-Process "C:\Users\Admin\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe" `
+  -ArgumentList "C:\Users\Admin\Documents\firefox_videoplaylist\native-host\video_host.py" `
+  -WindowStyle Hidden
+
+# Проверить статус
+Invoke-WebRequest http://127.0.0.1:8765/status
+```
+
+**Важно**: `python.exe` из Microsoft Store — это заглушка, не работает. Настоящий Python: путь выше.
 
 ## Принятые решения
 
