@@ -41,6 +41,7 @@ firefox_videoplaylist/
 │   │                               onMessage, webRequest listener, schedule()
 │   ├── content.ts                 Content script: scan(), MutationObserver
 │   │                               Инжектируется на все разрешённые страницы
+│   │                               Обработчик scanNow: немедленный перезапуск скана
 │   │
 │   ├── sidebar.ts                 Боковая панель: карточки, фильтры, экспорт
 │   ├── player.ts                  Плеер: hls.js, dash.js, <video>, <iframe>

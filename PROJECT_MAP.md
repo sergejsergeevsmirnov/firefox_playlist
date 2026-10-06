@@ -113,6 +113,9 @@ player.ts         ← core.ts, model.ts, ui.ts
 ## Поток данных
 
 ```
+background.ts → tabs.sendMessage('scanNow') → content.ts  (при старте сессии)
+  └─ немедленный scan() без ожидания 2-сек. интервала
+
 Страница → content.ts
   ├─ discoverYandex() / discoverGeneric()     DOM-кандидаты
   ├─ inspectVkResources()                     CDN-пробы (HEAD)
