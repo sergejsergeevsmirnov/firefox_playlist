@@ -179,9 +179,14 @@ $('#collect').onclick = () => {
   if (activeTab?.id === undefined || !activeTab.url) return;
   const tabId = activeTab.id;
   if (sessions[tabId]) { void send('stop', { tabId }).then(refresh).catch(notifyError); return; }
-  // Request starts inside the click handler, preserving Firefox's user gesture.
-  void browser.permissions.request({ origins: [...new Set([originPattern(activeTab.url), ...captureOrigins(activeTab.url)])] }).then(async granted => {
+  const pageOrigins = [...new Set([originPattern(activeTab.url), ...captureOrigins(activeTab.url)])];
+  // Bundle previously approved (but now missing) origins into the same permission request so
+  // the user confirms everything in ONE Firefox dialog instead of clicking "Разрешить" for each
+  // CDN domain that was lost after an extension update or reinstall.
+  const allOrigins = [...new Set([...pageOrigins, ...missingApproved])];
+  void browser.permissions.request({ origins: allOrigins }).then(async granted => {
     if (!granted) { notify('Для сбора нужен доступ к этой странице.'); return; }
+    if (missingApproved.length) await syncApproved(); // clear missingApproved now that they're restored
     await send('start', { tabId, vkForeground:$<HTMLInputElement>('#vk-foreground').checked }); await refresh(); notify('Сбор включён. Прокручивайте страницу, чтобы находить новые ролики.');
   }).catch(notifyError);
 };
