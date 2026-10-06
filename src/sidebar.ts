@@ -59,6 +59,20 @@ async function syncApproved(): Promise<void> {
   for (const o of saved) if (!await browser.permissions.contains({ origins: [o] })) missing.push(o);
   missingApproved = missing;
 }
+// Broad access: when http://*/* + https://*/* are granted, no per-domain dialogs are needed at all.
+const BROAD: string[] = ['http://*/*', 'https://*/*'];
+let broadAccess = false;
+async function syncBroadAccess(): Promise<void> {
+  broadAccess = await browser.permissions.contains({ origins: BROAD });
+}
+async function grantBroadAccess(): Promise<void> {
+  const granted = await browser.permissions.request({ origins: BROAD });
+  if (!granted) { notify('Доступ не предоставлен.'); return; }
+  await syncBroadAccess();
+  await send('permissionsChanged');
+  notify('Доступ ко всем сайтам разрешён — источники будут проверяться без дополнительных диалогов.');
+  await refresh();
+}
 let state = emptyState(); let sessions: Record<number, Session> = {}; let activeTab: browser.tabs.Tab | undefined;
 let formLoaded = false; let refreshVersion = 0;
 let renderedSignature = '';
@@ -95,7 +109,7 @@ async function refresh(): Promise<void> {
   state = data.state; sessions = data.sessions; activeTab = tabs[0];
   if (!formLoaded) { populate(state.filters); formLoaded = true; }
   const signature = JSON.stringify({ queue: state.queue, filters: state.filters, sessions, tab: activeTab?.id, url: activeTab?.url,
-    missingApproved,
+    broadAccess, missingApproved,
     videos: Object.values(state.videos).map(({ position: _position, ...video }) => video) });
   if (signature !== renderedSignature) { renderedSignature = signature; render(); }
 }
@@ -103,7 +117,7 @@ async function grant(origins: string[]): Promise<void> {
   const granted = await browser.permissions.request({ origins });
   if (!granted) { notify('Доступ не предоставлен. Ссылка на источник сохранена.'); return; }
   await appendApproved(origins);
-  await syncApproved();
+  await Promise.all([syncApproved(), syncBroadAccess()]);
   await send('permissionsChanged'); notify('Доступ разрешён. Повторная проверка запущена.'); await refresh();
 }
 function card(video: Video, inQueue: boolean, index = 0): HTMLElement {
@@ -161,12 +175,15 @@ function render(): void {
   const frameAccess = $('#frame-access'); frameAccess.replaceChildren();
   const videoOrigins = [...new Set(Object.values(state.videos).flatMap(v => v.requiredOrigins))];
   const allNeeded = [...new Set([...videoOrigins, ...missingApproved])];
-  if (allNeeded.length) {
+  if (!broadAccess && allNeeded.length) {
     const label = !videoOrigins.length && missingApproved.length
       ? `Восстановить разрешения (${allNeeded.length})`
       : `Разрешить источники (${allNeeded.length})`;
     frameAccess.append(button(label, () => grant(allNeeded), 'wide'));
-  } else if (session?.frameOrigins.length) frameAccess.append(button('Разрешить встроенные плееры', () => grant(session.frameOrigins), 'text-button'));
+    frameAccess.append(button('Разрешить все сайты (не спрашивать снова)', grantBroadAccess, 'text-button'));
+  } else if (!broadAccess && session?.frameOrigins.length) {
+    frameAccess.append(button('Разрешить встроенные плееры', () => grant(session.frameOrigins), 'text-button'));
+  }
   $('#queue-count').textContent = String(state.queue.length);
   $('#queue').replaceChildren(...state.queue.map((id, i) => card(state.videos[id], true, i)));
   if (!state.queue.length) $('#queue').append(element('p', 'Здесь появятся видео, прошедшие проверку и фильтры.', 'empty'));
@@ -186,7 +203,7 @@ $('#collect').onclick = () => {
   const allOrigins = [...new Set([...pageOrigins, ...missingApproved])];
   void browser.permissions.request({ origins: allOrigins }).then(async granted => {
     if (!granted) { notify('Для сбора нужен доступ к этой странице.'); return; }
-    if (missingApproved.length) await syncApproved(); // clear missingApproved now that they're restored
+    await Promise.all([syncApproved(), syncBroadAccess()]);
     await send('start', { tabId, vkForeground:$<HTMLInputElement>('#vk-foreground').checked }); await refresh(); notify('Сбор включён. Прокручивайте страницу, чтобы находить новые ролики.');
   }).catch(notifyError);
 };
@@ -238,9 +255,8 @@ browser.storage.onChanged.addListener(() => { void refresh().catch(notifyError);
 browser.tabs.onActivated.addListener(() => { void refresh().catch(notifyError); });
 browser.tabs.onUpdated.addListener((_id, change) => { if (change.url) void refresh().catch(notifyError); });
 void refresh().catch(notifyError);
-// Check for approved origins that are missing (e.g. after extension update) and trigger
-// a re-render so the "Восстановить разрешения" button appears if needed.
-void syncApproved().then(() => refresh()).catch(notifyError);
+// Check for missing/broad access after state loads and re-render so buttons appear correctly.
+void Promise.all([syncApproved(), syncBroadAccess()]).then(() => refresh()).catch(notifyError);
 void send<{ available?: boolean; error?: string }>('nativeStatus').then(res => {
   $('#version').textContent += res.available ? ' · yt-dlp: ✓' : ` · yt-dlp: ✗ (${res.error || '?'})`;
 }).catch(error => { $('#version').textContent += ` · yt-dlp: ✗ (${error instanceof Error ? error.message : String(error)})`; });
