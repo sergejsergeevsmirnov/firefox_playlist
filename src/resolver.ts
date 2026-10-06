@@ -468,6 +468,27 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
         else attempts.push({ reason: error instanceof Error ? error.message : 'Встроенный плеер не запустился' });
       }
     }
+    // If fetchText succeeded (e.g. Cloudflare challenge page, 200 OK but no video content),
+    // no embeds were found, and no permissions are missing — the page was fetched headlessly
+    // but wasn't the real player page. Open the source URL in a background tab as last resort:
+    // this discovers redirect destinations (e.g. https://11.porno-bomba.net/) and either finds
+    // the video or surfaces the required host permission for that subdomain.
+    const embedsMissingBefore = [...new Set(attempts.flatMap(result => result.requiredOrigins ?? []))];
+    if (!embeds.length && !embedsMissingBefore.length) {
+      try {
+        const vars = await readEmbedPlayer(fetchUrl, budget);
+        if (vars.length) {
+          const r = await resolveStreams({ ...input, variants: vars }, budget);
+          if (r.status === 'ready') return withCanonical(r);
+          attempts.push(r);
+        }
+      } catch (tabError) {
+        if (tabError instanceof PermissionNeeded) {
+          return withCanonical({ status: 'site', reason: tabError.message,
+            requiredOrigins: [...new Set([...embedsMissingBefore, ...tabError.origins])] });
+        }
+      }
+    }
     const missing = [...new Set(attempts.flatMap(result => result.requiredOrigins ?? []))];
     return withCanonical({ status: 'site', variants: [], duration: input.expectedDuration ?? input.duration, requiredOrigins: missing,
       reason: missing.length ? 'Нужен доступ к сайту полного видео или CDN.' : attempts.find(a => a.reason)?.reason || 'Полный поток не найден в открытых данных. Откройте оригинал и запустите его плеер.' });
