@@ -301,29 +301,43 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
 // tabs.create and tabs.get require NO host permissions, so this runs before any permission
 // is granted — used to bundle redirect-destination origins (like 11.porno-bomba.net) into
 // the very first "Разрешить проверку" dialog instead of requiring a second click.
-async function discoverTabRedirect(url: string): Promise<string> {
-  const tab = await browser.tabs.create({ url, active: false });
-  if (tab.id === undefined) return url;
-  try {
-    await browser.tabs.update(tab.id, { muted: true }).catch(() => {});
-    let finalUrl = url;
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline) {
-      const current = await browser.tabs.get(tab.id);
-      if (current.url && current.url !== 'about:blank') finalUrl = current.url;
-      if (current.status === 'complete') {
-        // Wait for JS-redirects that fire after 'complete' (e.g. porno-bomba.net → 11.porno-bomba.net).
-        await new Promise(r => setTimeout(r, 1500));
-        const after = await browser.tabs.get(tab.id);
-        if (after.url && after.url !== 'about:blank') finalUrl = after.url;
-        break;
+//
+// Keyed by source origin so that N concurrent checks for the same domain open exactly ONE
+// background tab (all share the same Promise). On error the cache entry is removed so the
+// next caller retries.
+const redirectDiscoveryCache = new Map<string, Promise<string>>();
+function discoverTabRedirect(url: string): Promise<string> {
+  let origin: string;
+  try { origin = new URL(url).origin; } catch { return Promise.resolve(url); }
+  const existing = redirectDiscoveryCache.get(origin);
+  if (existing) return existing;
+  const discovery = (async () => {
+    const tab = await browser.tabs.create({ url, active: false });
+    if (tab.id === undefined) return url;
+    try {
+      await browser.tabs.update(tab.id, { muted: true }).catch(() => {});
+      let finalUrl = url;
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        const current = await browser.tabs.get(tab.id);
+        if (current.url && current.url !== 'about:blank') finalUrl = current.url;
+        if (current.status === 'complete') {
+          // Wait for JS-redirects that fire after 'complete' (e.g. porno-bomba.net → 11.porno-bomba.net).
+          await new Promise(r => setTimeout(r, 1500));
+          const after = await browser.tabs.get(tab.id);
+          if (after.url && after.url !== 'about:blank') finalUrl = after.url;
+          break;
+        }
+        await new Promise(r => setTimeout(r, 400));
       }
-      await new Promise(r => setTimeout(r, 400));
+      return finalUrl;
+    } finally {
+      await browser.tabs.remove(tab.id).catch(() => {});
     }
-    return finalUrl;
-  } finally {
-    await browser.tabs.remove(tab.id).catch(() => {});
-  }
+  })();
+  discovery.catch(() => redirectDiscoveryCache.delete(origin));
+  redirectDiscoveryCache.set(origin, discovery);
+  return discovery;
 }
 export async function resolveVideo(input: Video, allowBrowser = false, cancellation?: AbortSignal, vkCaptureFailure?: string, vkForeground = false): Promise<Partial<Video>> {
   const timeout = AbortSignal.timeout(60000);
