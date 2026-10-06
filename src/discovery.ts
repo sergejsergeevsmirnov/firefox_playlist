@@ -74,6 +74,21 @@ export function discoverEmbedded(doc: Document, pageUrl: string): Candidate[] {
       if (assignment) { try { walk(JSON.parse(assignment[1].replace(/;$/, ''))); } catch { /* never evaluate script */ } }
     }
   }
+  // Regex fallback: scan script text for media URLs that JSON parsing missed
+  // (e.g. jwplayer('x').setup({file:"https://..."}) or plain variable assignments).
+  const mediaRe = /https?:\/\/(?!(?:www\.)?(?:youtube\.com|youtu\.be|vimeo\.com))[^\s'"<>{},\[\]\\]{4,400}\.(?:mp4|webm|m3u8|mpd|flv|mov)(?:\?[^\s'"<>{},\[\]\\]*)?/gi;
+  for (const script of doc.querySelectorAll('script')) {
+    const text = script.textContent || '';
+    if (text.length > 1 * 1024 * 1024) continue;
+    let m: RegExpExecArray | null;
+    mediaRe.lastIndex = 0;
+    while ((m = mediaRe.exec(text)) !== null) {
+      const url = m[0];
+      const v = variant(url);
+      if (v && !found.some(c => c.variants.some(x => x.url === url)))
+        found.push({ sourceUrl: pageUrl, title: doc.title || 'Видео', variants: [v] });
+    }
+  }
   return found;
 }
 export function rankSourceCandidates(candidates: Candidate[], expectedDuration?: number): Candidate[] {
@@ -85,6 +100,8 @@ export function rankSourceCandidates(candidates: Candidate[], expectedDuration?:
 }
 export function discoverGeneric(doc: Document, pageUrl: string): Candidate[] {
   const found: Candidate[] = [];
+  // Strip mobile subdomains (m., mob., mobile.) so panel always shows the desktop URL.
+  const srcUrl = stripMobileSubdomain(pageUrl);
   for (const [index, element] of [...doc.querySelectorAll('video')].entries()) {
     const video = element as HTMLVideoElement;
     // Yandex's moving thumbnails are short previews, not the result videos.
@@ -100,7 +117,7 @@ export function discoverGeneric(doc: Document, pageUrl: string): Candidate[] {
     }
     if (!variants.length) continue;
     found.push({
-      sourceUrl: pageUrl, identity: `element:${pageUrl}#${video.id || index}`,
+      sourceUrl: srcUrl, identity: `element:${srcUrl}#${video.id || index}`,
       title: video.title || video.getAttribute('aria-label') || doc.title || 'Видео',
       thumbnail: httpUrl(video.getAttribute('poster'), pageUrl),
       duration: Number.isFinite(video.duration) ? video.duration : undefined,
@@ -111,12 +128,17 @@ export function discoverGeneric(doc: Document, pageUrl: string): Candidate[] {
   for (const link of doc.querySelectorAll('a[href]')) {
     const url = httpUrl(link.getAttribute('href'), pageUrl); if (!url) continue;
     const v = variant(url); if (!v) continue;
-    found.push({ sourceUrl: pageUrl, title: link.textContent?.trim() || doc.title || 'Видео', variants: [v] });
+    found.push({ sourceUrl: srcUrl, title: link.textContent?.trim() || doc.title || 'Видео', variants: [v] });
   }
-  for (const meta of doc.querySelectorAll('meta[property="og:video"],meta[property="og:video:url"],meta[property="og:video:secure_url"],meta[itemprop="contentUrl"]')) {
-    const url = httpUrl(meta.getAttribute('content'), pageUrl); if (!url) continue;
-    const v = variant(url, doc.querySelector('meta[property="og:video:type"]')?.getAttribute('content') || undefined);
-    if (v) found.push({ sourceUrl: pageUrl, title: doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || doc.title || 'Видео', variants: [v] });
+  // Skip og:video on Yandex Video pages: those URLs are embed players from external sites, and
+  // discoverYandex() extracts the real sourceUrl. Creating a candidate here would store the
+  // Yandex preview URL as sourceUrl and the embed URL as a variant, which both are wrong.
+  if (!isYandexVideo(pageUrl)) {
+    for (const meta of doc.querySelectorAll('meta[property="og:video"],meta[property="og:video:url"],meta[property="og:video:secure_url"],meta[itemprop="contentUrl"]')) {
+      const url = httpUrl(meta.getAttribute('content'), pageUrl); if (!url) continue;
+      const v = variant(url, doc.querySelector('meta[property="og:video:type"]')?.getAttribute('content') || undefined);
+      if (v) found.push({ sourceUrl: srcUrl, title: doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || doc.title || 'Видео', variants: [v] });
+    }
   }
   const walk = (obj: unknown, depth = 0) => {
     if (!obj || typeof obj !== 'object' || depth > 15) return;
@@ -125,7 +147,7 @@ export function discoverGeneric(doc: Document, pageUrl: string): Candidate[] {
     if (data['@type'] === 'VideoObject' || (Array.isArray(data['@type']) && data['@type'].includes('VideoObject'))) {
       const url = typeof data.contentUrl === 'string' ? httpUrl(data.contentUrl, pageUrl) : undefined;
       const v = url ? variant(url) : undefined;
-      if (v) found.push({ sourceUrl: pageUrl, title: String(data.name || doc.title || 'Видео'), duration: parseDuration(data.duration), expectedDuration: parseDuration(data.duration), discovery: 'structured', variants: [v] });
+      if (v) found.push({ sourceUrl: srcUrl, title: String(data.name || doc.title || 'Видео'), duration: parseDuration(data.duration), expectedDuration: parseDuration(data.duration), discovery: 'structured', variants: [v] });
     }
     Object.values(data).forEach(x => walk(x, depth + 1));
   };
@@ -139,15 +161,23 @@ export function isYandexVideo(url: string): boolean {
   const u = new URL(url);
   return (/(^|\.)yandex\.(ru|com|by|kz|uz|com\.tr)$/.test(u.hostname) || /(^|\.)ya\.ru$/.test(u.hostname)) && /^\/video(?:\/|$)/.test(u.pathname);
 }
+function stripMobileSubdomain(url: string): string {
+  try {
+    const p = new URL(url);
+    if (/^(?:m|mob|mobile)\./i.test(p.hostname)) { p.hostname = p.hostname.replace(/^(?:m|mob|mobile)\./i, ''); return p.href; }
+  } catch { /* invalid URL */ }
+  return url;
+}
 function externalUrl(raw: string | undefined | null, page: string): string | undefined {
   const url = httpUrl(raw, page); if (!url) return;
   const parsed = new URL(url);
+  // Yandex redirect URLs carry the destination in a query parameter — extract and normalize it.
   for (const key of ['url', 'video_url']) {
     const target = httpUrl(parsed.searchParams.get(key));
-    if (target && !isYandexVideo(target)) return target;
+    if (target && !isYandexVideo(target)) return stripMobileSubdomain(target);
   }
   if (isYandexVideo(url) || /(^|\.)yandex\./.test(parsed.hostname) || /(^|\.)ya\.ru$/.test(parsed.hostname)) return;
-  return url;
+  return stripMobileSubdomain(url);
 }
 export function discoverYandex(doc: Document, pageUrl: string): Candidate[] {
   if (!isYandexVideo(pageUrl)) return [];

@@ -13,6 +13,8 @@ import { vimeoConfigUrl, vimeoStreams, readVimeoPlayer } from './vimeo';
 import { nativePing } from './native';
 
 export class PermissionNeeded extends Error {
+  /** Set when a cross-domain redirect was detected: the canonical URL the source actually lives at. */
+  canonicalUrl?: string;
   constructor(public origins: string[]) { super('Нужен доступ к сайту для проверки источника'); }
 }
 export async function requireAccess(url: string): Promise<void> {
@@ -20,12 +22,27 @@ export async function requireAccess(url: string): Promise<void> {
   const origin = originPattern(url);
   if (!await browser.permissions.contains({ origins: [origin] })) throw new PermissionNeeded([origin]);
 }
-async function fetchText(url: string, budget?: AbortSignal, maxBytes = 2 * 1024 * 1024, referrer?: string): Promise<{ text: string; url: string; mime: string }> {
+async function fetchText(url: string, budget?: AbortSignal, maxBytes = 2 * 1024 * 1024, referrer?: string, detectRedirects = false): Promise<{ text: string; url: string; mime: string }> {
   // Catalogs can retain HTTP links to HTTPS-only hosts. Obtain both scheme
   // permissions before Firefox follows the redirect, not after fetch fails.
   const origins = [originPattern(url)];
   const address = new URL(url);
   if (address.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(address.hostname)) origins.push(originPattern(url).replace(/^http:/, 'https:'));
+  if (detectRedirects) {
+    // Quick HEAD pre-flight to discover cross-domain redirects so all required
+    // permissions can be bundled into a single user dialog instead of one per step.
+    try {
+      const pre = await fetch(url, { method: 'HEAD', credentials: 'omit', redirect: 'follow',
+        referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(3000) });
+      const finalOrigin = originPattern(pre.url);
+      if (!origins.includes(finalOrigin)) {
+        origins.push(finalOrigin);
+        const fa = new URL(pre.url);
+        if (fa.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(fa.hostname))
+          origins.push(finalOrigin.replace(/^http:/, 'https:'));
+      }
+    } catch { /* pre-flight failed; proceed with known origins only */ }
+  }
   const missing: string[] = [];
   for (const origin of origins) if (!await browser.permissions.contains({ origins: [origin] })) missing.push(origin);
   if (missing.length) throw new PermissionNeeded(missing);
@@ -36,7 +53,13 @@ async function fetchText(url: string, budget?: AbortSignal, maxBytes = 2 * 1024 
     if (referrer) { fetchInit.referrer = referrer; } else { fetchInit.referrerPolicy = 'no-referrer'; }
     const response = await fetch(url, fetchInit);
     if (!response.ok) throw new Error(`Источник ответил HTTP ${response.status}`);
-    await requireAccess(response.url);
+    // Inline permission check for the redirect destination (replaces requireAccess so we can
+    // attach canonicalUrl to the error when a cross-domain redirect was discovered).
+    if (!await browser.permissions.contains({ origins: [originPattern(response.url)] })) {
+      const err = new PermissionNeeded([originPattern(response.url)]);
+      if (response.url !== url) err.canonicalUrl = response.url;
+      throw err;
+    }
     const reader = response.body?.getReader(); const decoder = new TextDecoder(); let text = ''; let size = 0;
     if (!reader) throw new Error('Пустой ответ источника');
     try {
@@ -86,9 +109,109 @@ export async function probeFile(variant: Variant): Promise<{ variant: Variant; d
   else init.referrerPolicy = 'no-referrer';
   const response = await fetch(variant.url, init);
   const ok = response.ok || response.status === 206;
+  const contentType = response.headers.get('content-type') || '';
   await response.body?.cancel().catch(() => {});
   if (!ok) throw new Error(`Формат, доступ или CORS не позволяют открыть видео (HTTP ${response.status})`);
+  // An HTML response means the URL is a web page (e.g. an embed player), not a video file.
+  if (/^text\/html/i.test(contentType)) throw new Error('URL ведёт на HTML-страницу плеера, а не на видеофайл; откройте источник в браузере');
   return { variant: { ...variant, portable: true }, duration: undefined, live: undefined };
+}
+let embedTabBusy = false;
+async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<Variant[]> {
+  if (embedTabBusy) return [];
+  embedTabBusy = true;
+  try {
+    const tab = await browser.tabs.create({ url: embedUrl, active: false });
+    if (tab.id === undefined) return [];
+    try {
+      await browser.tabs.update(tab.id, { muted: true });
+      const deadline = Date.now() + 15000;
+      let complete = false; let finalUrl = embedUrl;
+      while (Date.now() < deadline) {
+        budget.throwIfAborted();
+        if (!complete) {
+          const current = await browser.tabs.get(tab.id);
+          if (current.url) finalUrl = current.url;
+          if (current.status === 'complete') complete = true;
+        }
+        if (complete) {
+          // After a redirect (e.g. http → https) the tab's URL changes — require permission for it.
+          if (!await browser.permissions.contains({ origins: [originPattern(finalUrl)] })) {
+            throw new PermissionNeeded([originPattern(finalUrl)]);
+          }
+          const result = await browser.scripting.executeScript({
+            target: { tabId: tab.id, allFrames: true },
+            func: (() => {
+              const urls: string[] = [];
+              document.querySelectorAll('video').forEach(v => {
+                const ve = v as HTMLVideoElement;
+                for (const attr of ['src', 'data-src', 'data-video', 'data-url']) {
+                  const s = attr === 'src' ? (ve.currentSrc || ve.src) : (ve.getAttribute(attr) ?? '');
+                  if (s && /^https?:\/\//.test(s) && !urls.includes(s)) urls.push(s);
+                }
+                ve.querySelectorAll('source').forEach(src => {
+                  for (const attr of ['src', 'data-src']) {
+                    const u = src.getAttribute(attr) || '';
+                    if (u && /^https?:\/\//.test(u) && !urls.includes(u)) urls.push(u);
+                  }
+                });
+                // Trigger lazy-loading players: set src from data-src if not loaded, then play (muted).
+                ve.muted = true;
+                if (!ve.src && !ve.currentSrc) {
+                  const lazySrc = ve.getAttribute('data-src') || ve.getAttribute('data-video');
+                  if (lazySrc) ve.src = lazySrc;
+                }
+                ve.play().catch(() => {});
+              });
+              // Read player config from JS APIs — available even before the video plays.
+              const tryAdd = (u: unknown) => { const s = String(u ?? ''); if (/^https?:\/\//.test(s) && !urls.includes(s)) urls.push(s); };
+              try {
+                const jw = (window as any).jwplayer;
+                if (typeof jw === 'function') {
+                  const readInst = (inst: any) => {
+                    try {
+                      const p = inst?.getConfig?.()?.playlist?.[0];
+                      [...(p?.sources ?? []), p ?? {}].forEach((s: any) => { tryAdd(s?.file); tryAdd(s?.src); });
+                    } catch {}
+                  };
+                  readInst(jw());
+                  document.querySelectorAll('[id]').forEach(el => { try { readInst(jw(el.id)); } catch {}; });
+                }
+              } catch {}
+              try {
+                const vjs = (window as any).videojs?.players ?? {};
+                Object.values(vjs).forEach((p: any) => { try { tryAdd((p as any).currentSrc?.()); } catch {}; });
+              } catch {}
+              // Click common play-button selectors so lazy-loading players start fetching the video.
+              if (urls.length === 0) {
+                ['.jw-icon-play', '.fp-play', '[class*="play-btn"]', '[class*="playbtn"]', '[class*="play_btn"]', '[class*="playBtn"]', '[aria-label*="play" i]', '[title*="play" i]'].forEach(sel => {
+                  try { document.querySelectorAll(sel).forEach(el => (el as HTMLElement).click()); } catch {}
+                });
+              }
+              // Scan all network requests loaded by this frame — captures video URLs fetched
+              // via XHR or media element even before <video>.currentSrc is populated.
+              performance.getEntriesByType('resource').forEach(e => {
+                const u = (e as PerformanceResourceTiming).name;
+                if (/\.(mp4|webm|m3u8|mpd|ogg|ts)(\?|$)/i.test(u) && !urls.includes(u)) urls.push(u);
+              });
+              return urls;
+            }) as () => void
+          });
+          // Combine results from all frames (main document + iframes)
+          const urls = [...new Set((result ?? []).flatMap(r => (r?.result ?? []) as string[]))];
+          if (urls.length) {
+            return urls.flatMap(url => {
+              if (isPreviewUrl(url)) return [];
+              const format = mediaFormat(url) ?? ('file' as const);
+              return [{ url, format, portable: true as const }];
+            });
+          }
+        }
+        await new Promise(r => setTimeout(r, 600));
+      }
+      return [];
+    } finally { await browser.tabs.remove(tab.id).catch(() => {}); }
+  } finally { embedTabBusy = false; }
 }
 export async function resolveVideo(input: Video, allowBrowser = false, cancellation?: AbortSignal, vkCaptureFailure?: string, vkForeground = false): Promise<Partial<Video>> {
   const timeout = AbortSignal.timeout(60000);
@@ -211,21 +334,33 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       const variants = await readVimeoPlayer(input.sourceUrl, budget);
       return await resolveStreams({ ...input, variants }, budget);
     }
-    const page = await fetchText(vimeoFetchUrl(input.sourceUrl), budget);
+    const fetchUrl = vimeoFetchUrl(input.sourceUrl);
+    const page = await fetchText(fetchUrl, budget, undefined, undefined, true);
     const doc = new DOMParser().parseFromString(page.text, 'text/html');
+    // When the page redirected to a different domain, record the canonical URL so the
+    // stored sourceUrl is updated to the real site after the check completes.
+    const canonical = page.url !== fetchUrl ? page.url : undefined;
+    const withCanonical = (r: Partial<Video>): Partial<Video> => canonical ? { ...r, sourceUrl: canonical } : r;
     const tryCandidates = async (candidates: Candidate[]) => {
       for (const candidate of rankSourceCandidates(candidates, input.expectedDuration).slice(0, 8)) {
         const result = await resolveStreams({ ...input, variants: candidate.variants,
           duration: input.duration ?? candidate.duration, expectedDuration: input.expectedDuration ?? candidate.expectedDuration }, budget);
-        if (result.status === 'ready') return result;
+        if (result.status === 'ready') return withCanonical(result);
         attempts.push(result);
       }
     };
     const result = await tryCandidates(discoverGeneric(doc, page.url));
     if (result) return result;
-    // Follow only explicitly embedded player frames, one level, never related-page links.
-    const embeds = [...doc.querySelectorAll('iframe[src], meta[name="twitter:player"]')].map(f => httpUrl(f.getAttribute('src') || f.getAttribute('content'), page.url))
-      .filter((url): url is string => !!url && /player|embed|video/i.test(new URL(url).pathname) && !isPreviewUrl(url)).slice(0, 2);
+    // Follow explicitly embedded player frames and og:video URLs without a media extension
+    // (those are embed player pages, e.g. pbembed.me/embed/55864/, not direct video files).
+    const ogEmbedSrcs = [...doc.querySelectorAll('meta[property="og:video"],meta[property="og:video:url"]')]
+      .map(m => httpUrl(m.getAttribute('content'), page.url))
+      .filter((url): url is string => !!url && !mediaFormat(url));
+    const embeds = [...new Set([
+      ...[...doc.querySelectorAll('iframe[src], meta[name="twitter:player"]')]
+        .map(f => httpUrl(f.getAttribute('src') || f.getAttribute('content'), page.url)),
+      ...ogEmbedSrcs,
+    ])].filter((url): url is string => !!url && /player|embed|video/i.test(new URL(url).pathname) && !isPreviewUrl(url)).slice(0, 2);
     for (const embed of embeds) {
       try {
         const frame = await fetchText(embed, budget);
@@ -236,19 +371,87 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
         else attempts.push({reason:error instanceof Error ? error.message : 'Плеер источника недоступен'});
       }
     }
+    // Static HTML had nothing — open each embed in a background tab so JavaScript can run
+    // and video elements can appear (e.g. pbembed.me players load their src dynamically).
+    for (const embed of embeds) {
+      try {
+        const vars = await readEmbedPlayer(embed, budget);
+        if (vars.length) {
+          const result = await resolveStreams({ ...input, variants: vars }, budget);
+          if (result.status === 'ready') return withCanonical(result);
+          attempts.push(result);
+        }
+      } catch (error) {
+        if (error instanceof PermissionNeeded) attempts.push({ requiredOrigins: error.origins });
+        else attempts.push({ reason: error instanceof Error ? error.message : 'Встроенный плеер не запустился' });
+      }
+    }
     const missing = [...new Set(attempts.flatMap(result => result.requiredOrigins ?? []))];
-    return { status: 'site', variants: [], duration: input.expectedDuration ?? input.duration, requiredOrigins: missing,
-      reason: missing.length ? 'Нужен доступ к сайту полного видео или CDN.' : attempts.find(a => a.reason)?.reason || 'Полный поток не найден в открытых данных. Откройте оригинал и запустите его плеер.' };
+    return withCanonical({ status: 'site', variants: [], duration: input.expectedDuration ?? input.duration, requiredOrigins: missing,
+      reason: missing.length ? 'Нужен доступ к сайту полного видео или CDN.' : attempts.find(a => a.reason)?.reason || 'Полный поток не найден в открытых данных. Откройте оригинал и запустите его плеер.' });
   } catch (error) {
-    if (error instanceof PermissionNeeded) return { status: 'site', reason: error.message, requiredOrigins: [...new Set([...attempts.flatMap(a => a.requiredOrigins ?? []), ...error.origins])] };
+    if (error instanceof PermissionNeeded) {
+      const r: Partial<Video> = { status: 'site', reason: error.message, requiredOrigins: [...new Set([...attempts.flatMap(a => a.requiredOrigins ?? []), ...error.origins])] };
+      if (error.canonicalUrl) r.sourceUrl = error.canonicalUrl;
+      return r;
+    }
     if (cancellation?.aborted) return {status:'site',reason:'Проверка отменена при остановке сбора.',requiredOrigins:[]};
     if (budget.aborted) return {status:'error',reason:'Проверка превысила 60 секунд. Источник или его медиасервер не ответил вовремя.',requiredOrigins:[]};
     const reason = error instanceof Error ? error.message : 'Не удалось проверить источник';
     const vk = /(^|\.)(vkvideo\.ru|vk\.com)$/.test(new URL(input.sourceUrl).hostname);
     if (vk && /NetworkError|Failed to fetch|fetch failed/i.test(reason)) return {status:'site',requiredOrigins:[],reason:'VK Видео не отдал страницу фоновому запросу (возможен цикл перенаправлений или требование сеанса). Откройте источник и включите сбор на его вкладке; автоматический доступ не подтверждён.'};
-    return { status: 'error', reason: /NetworkError|Failed to fetch|fetch failed/i.test(reason)
-      ? 'Firefox не смог загрузить источник. Возможны блокировка запроса, перенаправление на другой сайт или недоступность сервера. Откройте источник и включите сбор на его вкладке. Подробности: ' + reason
-      : reason, requiredOrigins: [] };
+    // When headless fetch is blocked (anti-scraping), try to resolve via background tabs.
+    if (/NetworkError|Failed to fetch|fetch failed/i.test(reason)) {
+      const allOrigins = () => [...new Set(attempts.flatMap(a => a.requiredOrigins ?? []))];
+      // Embed-page URLs that arrived as initial variants (format=file, no media extension —
+      // e.g. pbembed.me/embed/55864/ from og:video). Open those directly in a tab: the
+      // <video> element is in the main frame there, so no cross-origin iframe permission needed.
+      const variantEmbeds = (input.variants ?? [])
+        .filter(v => v.format === 'file' && !mediaFormat(v.url))
+        .map(v => v.url);
+      for (const embedUrl of variantEmbeds) {
+        // 1) Static HTML first — embed services often allow headless fetch and may carry
+        //    the video URL in a <script> variable or JSON-LD.
+        try {
+          const ep = await fetchText(embedUrl, budget);
+          const ed = new DOMParser().parseFromString(ep.text, 'text/html');
+          for (const c of rankSourceCandidates(discoverGeneric(ed, ep.url), input.expectedDuration).slice(0, 8)) {
+            const r = await resolveStreams({ ...input, variants: c.variants, duration: input.duration ?? c.duration }, budget);
+            if (r.status === 'ready') return r;
+            attempts.push(r);
+          }
+        } catch (embedErr) {
+          if (embedErr instanceof PermissionNeeded)
+            return { status: 'site', reason: embedErr.message, requiredOrigins: [...new Set([...allOrigins(), ...embedErr.origins])] };
+        }
+        // 2) Background tab — let JavaScript run so the player initialises <video>.
+        try {
+          const vars = await readEmbedPlayer(embedUrl, budget);
+          if (vars.length) {
+            const r = await resolveStreams({ ...input, variants: vars }, budget);
+            if (r.status === 'ready') return r;
+          }
+        } catch (tabErr) {
+          if (tabErr instanceof PermissionNeeded)
+            return { status: 'site', reason: tabErr.message, requiredOrigins: [...new Set([...allOrigins(), ...tabErr.origins])] };
+        }
+      }
+      // Finally, open the source page itself in a background tab (catches sites that render
+      // the player in the main frame without an explicit embed URL in the variants).
+      try {
+        const vars = await readEmbedPlayer(input.sourceUrl, budget);
+        if (vars.length) {
+          const result = await resolveStreams({ ...input, variants: vars }, budget);
+          if (result.status === 'ready') return result;
+        }
+      } catch (tabError) {
+        if (tabError instanceof PermissionNeeded) {
+          return { status: 'site', reason: tabError.message, requiredOrigins: [...new Set([...allOrigins(), ...tabError.origins])] };
+        }
+      }
+      return { status: 'error', reason: 'Firefox не смог загрузить источник. Возможны блокировка запроса, перенаправление на другой сайт или недоступность сервера. Откройте источник и включите сбор на его вкладке. Подробности: ' + reason, requiredOrigins: [] };
+    }
+    return { status: 'error', reason, requiredOrigins: [] };
   }
 }
 async function resolveStreams(input: Video, budget: AbortSignal): Promise<Partial<Video>> {
