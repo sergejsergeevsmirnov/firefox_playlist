@@ -30,6 +30,7 @@ firefox_videoplaylist/
 │   ├── ok.ts                      OK.ru: парсинг HTML data-options
 │   ├── dzen.ts                    Дзен: парсинг _params JSON + fallback вкладка
 │   ├── vk.ts                      VK: AJAX al_video.php + fallback вкладка
+│   ├── vimeo.ts                   Vimeo: player config API + fallback embed-вкладка
 │   ├── youtube.ts                 YouTube: youtubei.js + PoToken (фоновая вкладка)
 │   ├── native.ts                  yt-dlp HTTP-мост: ping, status, download, cleanup,
 │   │                               nativeGetProxy(), nativeSetProxy()

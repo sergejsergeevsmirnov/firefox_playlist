@@ -29,11 +29,12 @@ rutube.ts         ← core.ts, model.ts
 ok.ts             ← core.ts, model.ts
 dzen.ts           ← core.ts, model.ts
 vk.ts             ← core.ts, model.ts, capture-policy.ts
+vimeo.ts          ← core.ts, model.ts, capture-policy.ts
 native.ts         ← (независимый — HTTP-клиент)
 youtube.ts        ← core.ts, model.ts, capture-policy.ts
 
 resolver.ts       ← core.ts, model.ts, media-policy.ts, manifests.ts, discovery.ts,
-                     rutube.ts, ok.ts, dzen.ts, vk.ts, youtube.ts, native.ts, capture-policy.ts
+                     rutube.ts, ok.ts, dzen.ts, vk.ts, vimeo.ts, youtube.ts, native.ts, capture-policy.ts
 
 background.ts     ← core.ts, model.ts, resolver.ts, task-pool.ts, media-policy.ts,
                      discovery.ts, quick-filters.ts, dzen.ts, ok.ts, capture-policy.ts, native.ts
@@ -88,10 +89,15 @@ player.ts         ← core.ts, model.ts, ui.ts
 - **Путь 2 (youtubei.js + PoToken)**: `readYoutubePlayer()` → открывает фоновую вкладку, внедряет скрипт в MAIN world, дешифрует `n`/`sig`, генерирует PoToken через `bgutils-js`
 - **Путь 3 (fallback)**: YouTube embed `https://www.youtube.com/embed/{id}` — формат `youtube`, воспроизводится как iframe
 
-### Vimeo
+### Vimeo (`src/vimeo.ts`)
 - Определение: `vimeoIdentity()` — vimeo.com, player.vimeo.com
-- Механизм: content-скрипт читает `performance.getEntriesByType('resource')`, фильтрует CDN-URL `*.vimeocdn.com` с `/playlist.m3u8` или `master.m3u8` или `.mpd`
+- **Путь 1 (без вкладки)**: `vimeoConfigUrl()` → GET `https://player.vimeo.com/video/{id}/config` с `Referer: https://vimeo.com/`
+  - Парсинг `vimeoStreams()`: `request.files.hls.cdns` → HLS, `request.files.dash.cdns` → DASH, `request.files.progressive[]` → MP4
+- **Путь 2 (фоновая вкладка, fallback)**: `readVimeoPlayer()` — открывает `player.vimeo.com/video/{id}?autoplay=1&muted=1` (embed-плеер, без Cloudflare), слушает `webRequest.onHeadersReceived` на `*.vimeocdn.com`
+- `vimeoResourceManifests()` — фильтр `/playlist.m3u8`, `master.m3u8`, `.mpd` от vimeocdn.com
 - `isVimeoChildManifest()` — исключает дочерние манифесты `/media.m3u8`
+- Разрешения: `https://*.vimeo.com/*`, `https://*.vimeocdn.com/*`
+- Статус: **Путь 1 — без вкладок** (для публичных видео); **Путь 2 — фоновая вкладка** (при 403)
 
 ### Яндекс.Видео (`src/discovery.ts` → `discoverYandex()`)
 - Определение: `isYandexVideo()` — yandex.ru/video, ya.ru/video и аналоги
@@ -121,6 +127,7 @@ background.ts → onMessage('discovered')
 resolver.ts → resolveVideo()
   ├─ rutubeStreams / okStreams / dzenStreams    HTTP-парсинг
   ├─ readVkStreams / readVkPlayer              VK API / вкладка
+  ├─ vimeoStreams / readVimeoPlayer           Vimeo config API / embed-вкладка
   ├─ readYoutubePlayer / nativeDownload       YouTube / yt-dlp
   └─ resolveStreams() → probeFile() / parseHls() / parseDash()
        ↓

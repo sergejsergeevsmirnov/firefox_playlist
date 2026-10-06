@@ -7,7 +7,7 @@ import { isYandexVideo } from './discovery';
 import { quickFilters } from './quick-filters';
 import { dzenPageUrl } from './dzen';
 import { okPageUrl } from './ok';
-import { captureOrigins, sourceIdentity, isVimeoChildManifest, vkIdentity, youtubeIdentity } from './capture-policy';
+import { captureOrigins, sourceIdentity, isVimeoChildManifest, vimeoIdentity, vkIdentity, youtubeIdentity } from './capture-policy';
 import { nativeDownload, nativeCleanup, nativePing, nativeStatus, nativeGetProxy, nativeSetProxy } from './native';
 
 let state: State = emptyState();
@@ -81,7 +81,7 @@ function schedule(id: string, tab?: number, token?: string, allowBrowser = false
   const key = `${id}|${tab ?? ''}|${token ?? ''}`;
   if (scheduled.has(key)) return;
   scheduled.add(key);
-  const needsBrowser = state.videos[id] && (dzenPageUrl(state.videos[id].sourceUrl) || vkIdentity(state.videos[id].sourceUrl));
+  const needsBrowser = state.videos[id] && (dzenPageUrl(state.videos[id].sourceUrl) || vkIdentity(state.videos[id].sourceUrl) || vimeoIdentity(state.videos[id].sourceUrl));
   const task = async () => {
     let changedDuringCheck = false;
     try {

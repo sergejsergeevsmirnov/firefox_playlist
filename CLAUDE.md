@@ -33,7 +33,7 @@ pnpm run package    # zip → artifacts/
 | Дзен | `src/dzen.ts` | Парсинг `_params` JSON из HTML **или** фоновая вкладка (fallback) |
 | VK/VKVideo | `src/vk.ts` | POST `al_video.php` (API-first) **или** фоновая вкладка (fallback) |
 | YouTube | `src/youtube.ts` + `src/native.ts` | yt-dlp мост (приоритет) → youtubei.js → embed |
-| Vimeo | `src/capture-policy.ts` + `src/discovery.ts` | Manifest CDN обнаружение |
+| Vimeo | `src/vimeo.ts` + `src/capture-policy.ts` | GET `player.vimeo.com/video/{id}/config` (API-first) **или** перехват манифестов CDN (fallback) |
 | Яндекс.Видео | `src/discovery.ts` → `discoverYandex()` | Каталог: парсинг карточек |
 | Общий | `src/discovery.ts` → `discoverGeneric()` | video-теги, og:video, JSON-LD |
 
@@ -43,6 +43,7 @@ pnpm run package    # zip → artifacts/
 - **`src/core.ts`** — чистые функции: `mergeCandidate`, `matches`, `enqueue`, `restoreState`, `exportPlaylist`, `formatTime`
 - **`src/resolver.ts`** — `resolveVideo()`: центральный диспетчер проверки; `probeFile()`, `resolveStreams()`
 - **`src/manifests.ts`** — `parseHls()` / `parseDash()`: парсинг и проверка манифестов
+- **`src/vimeo.ts`** — `vimeoConfigUrl()`, `vimeoStreams()`: API player.vimeo.com/video/{id}/config → варианты HLS/DASH/MP4
 - **`src/capture-policy.ts`** — identity-функции (`youtubeIdentity`, `vkIdentity`, `vimeoIdentity`), `captureOrigins()`
 - **`src/media-policy.ts`** — `isPreviewUrl()`, `isShortPreview()`
 - **`src/discovery.ts`** — `discoverGeneric()`, `discoverYandex()`, `discoverEmbedded()`, `rankSourceCandidates()`

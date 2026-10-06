@@ -6,9 +6,10 @@ import { isPreviewUrl, isShortPreview } from './media-policy';
 import { rutubeOptionsUrl, rutubeStreams } from './rutube';
 import { dzenPageUrl, dzenStreams, readDzenPlayer } from './dzen';
 import { okPageUrl, okStreams } from './ok';
-import { captureOrigins, sourceIdentity, vimeoFetchUrl, vkIdentity, youtubeIdentity } from './capture-policy';
+import { captureOrigins, sourceIdentity, vimeoFetchUrl, vimeoIdentity, vkIdentity, youtubeIdentity } from './capture-policy';
 import { readVkPlayer, readVkStreams } from './vk';
 import { readYoutubePlayer, youtubeEmbedUrl } from './youtube';
+import { vimeoConfigUrl, vimeoStreams, readVimeoPlayer } from './vimeo';
 import { nativePing } from './native';
 
 export class PermissionNeeded extends Error {
@@ -19,7 +20,7 @@ export async function requireAccess(url: string): Promise<void> {
   const origin = originPattern(url);
   if (!await browser.permissions.contains({ origins: [origin] })) throw new PermissionNeeded([origin]);
 }
-async function fetchText(url: string, budget?: AbortSignal, maxBytes = 2 * 1024 * 1024): Promise<{ text: string; url: string; mime: string }> {
+async function fetchText(url: string, budget?: AbortSignal, maxBytes = 2 * 1024 * 1024, referrer?: string): Promise<{ text: string; url: string; mime: string }> {
   // Catalogs can retain HTTP links to HTTPS-only hosts. Obtain both scheme
   // permissions before Firefox follows the redirect, not after fetch fails.
   const origins = [originPattern(url)];
@@ -31,7 +32,9 @@ async function fetchText(url: string, budget?: AbortSignal, maxBytes = 2 * 1024 
   await requireAccess(url);
   const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 12000);
   try {
-    const response = await fetch(url, { credentials: 'omit', signal: budget ? AbortSignal.any([controller.signal, budget]) : controller.signal, referrerPolicy: 'no-referrer' });
+    const fetchInit: RequestInit = { credentials: 'omit', signal: budget ? AbortSignal.any([controller.signal, budget]) : controller.signal };
+    if (referrer) { fetchInit.referrer = referrer; } else { fetchInit.referrerPolicy = 'no-referrer'; }
+    const response = await fetch(url, fetchInit);
     if (!response.ok) throw new Error(`Источник ответил HTTP ${response.status}`);
     await requireAccess(response.url);
     const reader = response.body?.getReader(); const decoder = new TextDecoder(); let text = ''; let size = 0;
@@ -188,6 +191,25 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
         duration: input.duration ?? input.expectedDuration, title: input.title,
         reason: extractionError ? `Извлечение потока не удалось (использую встроенный фрейм): ${extractionError}` : undefined,
         requiredOrigins: [] };
+    }
+    if (vimeoIdentity(input.sourceUrl)) {
+      const configUrl = vimeoConfigUrl(input.sourceUrl);
+      if (configUrl) {
+        try {
+          const response = await fetchText(configUrl, budget, 2 * 1024 * 1024, 'https://vimeo.com/');
+          const data = vimeoStreams(response.text);
+          if (data.variants.length) {
+            return await resolveStreams({ ...input, variants: data.variants,
+              duration: data.duration ?? input.duration, title: data.title ?? input.title }, budget);
+          }
+        } catch (error) {
+          budget.throwIfAborted();
+          attempts.push({ reason: error instanceof Error ? error.message : 'Vimeo не предоставил поток через API.' });
+        }
+      }
+      // Fallback: open a silent background tab and capture manifests the Vimeo player loads.
+      const variants = await readVimeoPlayer(input.sourceUrl, budget);
+      return await resolveStreams({ ...input, variants }, budget);
     }
     const page = await fetchText(vimeoFetchUrl(input.sourceUrl), budget);
     const doc = new DOMParser().parseFromString(page.text, 'text/html');
