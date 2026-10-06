@@ -297,6 +297,34 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
     } finally { await browser.tabs.remove(tab.id).catch(() => {}); }
   } finally { embedTabBusy = false; }
 }
+// Discovers the final URL after HTTP and JS redirects by opening a background tab.
+// tabs.create and tabs.get require NO host permissions, so this runs before any permission
+// is granted — used to bundle redirect-destination origins (like 11.porno-bomba.net) into
+// the very first "Разрешить проверку" dialog instead of requiring a second click.
+async function discoverTabRedirect(url: string): Promise<string> {
+  const tab = await browser.tabs.create({ url, active: false });
+  if (tab.id === undefined) return url;
+  try {
+    await browser.tabs.update(tab.id, { muted: true }).catch(() => {});
+    let finalUrl = url;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const current = await browser.tabs.get(tab.id);
+      if (current.url && current.url !== 'about:blank') finalUrl = current.url;
+      if (current.status === 'complete') {
+        // Wait for JS-redirects that fire after 'complete' (e.g. porno-bomba.net → 11.porno-bomba.net).
+        await new Promise(r => setTimeout(r, 1500));
+        const after = await browser.tabs.get(tab.id);
+        if (after.url && after.url !== 'about:blank') finalUrl = after.url;
+        break;
+      }
+      await new Promise(r => setTimeout(r, 400));
+    }
+    return finalUrl;
+  } finally {
+    await browser.tabs.remove(tab.id).catch(() => {});
+  }
+}
 export async function resolveVideo(input: Video, allowBrowser = false, cancellation?: AbortSignal, vkCaptureFailure?: string, vkForeground = false): Promise<Partial<Video>> {
   const timeout = AbortSignal.timeout(60000);
   const budget = cancellation ? AbortSignal.any([timeout,cancellation]) : timeout;
@@ -496,7 +524,30 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       reason: missing.length ? 'Нужен доступ к сайту полного видео или CDN.' : attempts.find(a => a.reason)?.reason || 'Полный поток не найден в открытых данных. Откройте оригинал и запустите его плеер.' });
   } catch (error) {
     if (error instanceof PermissionNeeded) {
-      const r: Partial<Video> = { status: 'site', reason: error.message, requiredOrigins: [...new Set([...attempts.flatMap(a => a.requiredOrigins ?? []), ...error.origins])] };
+      const extraOrigins: string[] = [];
+      // For generic (non-provider) sites, proactively discover JS-redirect destinations by
+      // opening a background tab — tabs.create/tabs.get need no host permissions.
+      // This bundles the redirect target (e.g. https://11.porno-bomba.net/*) into the FIRST
+      // permission dialog so the user only has to click "Разрешить" once.
+      const isGenericSite = !rutubeOptionsUrl(input.sourceUrl) && !okPageUrl(input.sourceUrl) &&
+        !dzenPageUrl(input.sourceUrl) && !mediaFormat(input.sourceUrl) &&
+        !sourceIdentity(input.sourceUrl) && !vkIdentity(input.sourceUrl) &&
+        !youtubeIdentity(input.sourceUrl) && !vimeoIdentity(input.sourceUrl);
+      if (isGenericSite) {
+        try {
+          const redirectUrl = await discoverTabRedirect(input.sourceUrl);
+          const redirectOrigin = originPattern(redirectUrl);
+          if (!error.origins.includes(redirectOrigin) &&
+              !await browser.permissions.contains({ origins: [redirectOrigin] })) {
+            extraOrigins.push(redirectOrigin);
+            const addr = new URL(redirectUrl);
+            if (addr.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(addr.hostname))
+              extraOrigins.push(redirectOrigin.replace(/^http:/, 'https:'));
+          }
+        } catch { /* best-effort; AbortError or tab errors must not block the permission dialog */ }
+      }
+      const r: Partial<Video> = { status: 'site', reason: error.message,
+        requiredOrigins: [...new Set([...attempts.flatMap(a => a.requiredOrigins ?? []), ...error.origins, ...extraOrigins])] };
       if (error.canonicalUrl) r.sourceUrl = error.canonicalUrl;
       return r;
     }
