@@ -276,27 +276,12 @@ async function handleUI(message: { type: string; [key: string]: any }): Promise<
       const suppressed = Object.values(sessions).flatMap(s => s.suppressed);
       for (const video of Object.values(state.videos).sort((a, b) => a.addedAt - b.addedAt)) enqueue(state, video, suppressed);
     }); return { ok: true };
-    case 'clearQueue': {
-      const activeTabs: number[] = [];
-      await mutate(() => {
-        for (const check of runningChecks.values()) check.controller.abort();
-        runningChecks.clear();
-        state.videos = {}; state.queue = []; state.dismissed = [];
-        // Keep the token and vkForeground intact so the sidebar stays green and
-        // current(tab, token) never returns false mid-scan. Reset only discovery
-        // state so the content script re-finds everything on its next cycle.
-        for (const [tabId, session] of Object.entries(sessions)) {
-          session.ids = []; session.suppressed = []; session.previewUrls = [];
-          session.vkCaptureFailure = undefined; session.frameOrigins = []; session.captureDiagnostic = undefined;
-          activeTabs.push(Number(tabId));
-        }
-      });
-      activeDownloads.clear();
-      // Re-inject content scripts so their signatures cache is cleared and they
-      // immediately re-discover everything visible on the page.
-      await Promise.allSettled(activeTabs.map(inject));
-      return { ok: true };
-    }
+    case 'clearQueue': await mutate(() => {
+      for (const check of runningChecks.values()) check.controller.abort();
+      runningChecks.clear();
+      state.videos = {}; state.queue = []; state.dismissed = [];
+      for (const tabId of Object.keys(sessions)) endSession(Number(tabId));
+    }); activeDownloads.clear(); return { ok: true };
     case 'reapply': await mutate(() => {
       const removed = state.queue.filter(id => matches(state.videos[id], state.filters) !== 'match');
       for (const session of Object.values(sessions)) session.suppressed = [...new Set([...session.suppressed, ...removed])];
