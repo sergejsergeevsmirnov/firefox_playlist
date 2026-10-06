@@ -265,7 +265,11 @@ async function handleUI(message: { type: string; [key: string]: any }): Promise<
       if (tab.id === undefined || !httpUrl(tab.url)) throw new Error('Откройте обычную HTTP/HTTPS-страницу');
       if (!await browser.permissions.contains({ origins: [originPattern(tab.url!)] })) throw new Error('Доступ к странице не предоставлен');
       await mutate(() => { sessions[tab.id!] = {...newSession(tab.url!),vkForeground:message.vkForeground === true}; state.dismissed = []; });
-      await syncScripts(); await inject(tab.id); return { ok: true };
+      await syncScripts(); await inject(tab.id);
+      // If inject hit a timing gap (executeScript race with old instance), tell any
+      // surviving content script to scan immediately with the new session token.
+      await browser.tabs.sendMessage(tab.id!, { type: 'scanNow' }).catch(() => {});
+      return { ok: true };
     }
     case 'stop': await mutate(() => { endSession(message.tabId); }); return { ok: true };
     case 'filters': await mutate(() => { state.filters = sanitizeFilters(message.filters); }); return { ok: true };

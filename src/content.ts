@@ -86,8 +86,13 @@ observer.observe(document, { childList: true, subtree: true, attributes: true, a
 document.addEventListener('loadedmetadata', schedule, true);
 window.addEventListener('popstate', schedule);
 const interval = setInterval(() => void scan(), 2000); // includes SPA pushState without page-world code injection
+const messageListener = (msg: unknown) => {
+  if ((msg as { type?: string })?.type === 'scanNow') { clearTimeout(timer); timer = setTimeout(() => void scan(), 80); }
+};
+browser.runtime.onMessage.addListener(messageListener);
 context.__videoPlaylistStop = () => {
   stopped = true; observer.disconnect(); resourceObserver.disconnect(); clearTimeout(timer); clearInterval(interval);
   document.removeEventListener('loadedmetadata', schedule, true); window.removeEventListener('popstate', schedule);
+  browser.runtime.onMessage.removeListener(messageListener);
 };
 void scan();
