@@ -20,7 +20,7 @@ $('#app').innerHTML = `
     <section class="surface compact-filters">
       <label class="proxy-label">Прокси для yt-dlp<span class="proxy-row"><input id="proxy-input" type="text" placeholder="http://127.0.0.1:2080" autocomplete="off" spellcheck="false"><button id="proxy-save" type="button">✓</button></span></label>
       <form id="filters">
-        <div class="field-pair"><label>Качество<select name="minHeight"><option value="">Любое</option></select></label><label>Длительность<select name="maxDuration"><option value="">∞ — любая</option></select></label></div>
+        <div class="field-pair"><label>Качество<select name="minHeight"><option value="">Любое</option></select></label><label>Длительность<div class="duration-filter"><select name="durationDir"><option value="lt">&lt;</option><option value="gt">&gt;</option></select><select name="durationValue"><option value="">любая</option></select></div></label></div>
         <label>Сайты<input name="host" placeholder="example.org, video.example.com"></label>
         <div class="field-pair"><label>Слова в названии<input name="include" placeholder="Все указанные"></label><label>Слова исключения<input name="exclude" placeholder="Любое из указанных"></label></div>
         <div class="preset-actions"><button id="reset" type="button">Сбросить</button><button id="save-filter" type="button">Сохранить фильтр</button><button id="load-filter" type="button">Загрузить фильтр</button></div>
@@ -38,8 +38,8 @@ for (const height of qualityPresets) {
   $('select[name="minHeight"]').append(option);
 }
 for (const duration of durationPresets) {
-  const option = element('option', `< ${duration === 3600 ? '1 ч' : `${duration / 60} мин`}`); option.value = String(duration);
-  $('select[name="maxDuration"]').append(option);
+  const option = element('option', duration === 3600 ? '1 ч' : `${duration / 60} м`); option.value = String(duration);
+  $('select[name="durationValue"]').append(option);
 }
 let state = emptyState(); let sessions: Record<number, Session> = {}; let activeTab: browser.tabs.Tab | undefined;
 let formLoaded = false; let refreshVersion = 0;
@@ -47,15 +47,28 @@ let renderedSignature = '';
 let filterTimer: ReturnType<typeof setTimeout>;
 const form = $<HTMLFormElement>('#filters');
 function populate(f: Filters): void {
-  for (const [key, value] of Object.entries(quickFilters(f))) {
+  const qf = quickFilters(f);
+  for (const [key, value] of Object.entries(qf)) {
     const input = form.elements.namedItem(key) as HTMLInputElement | null;
     if (input) input.value = value === undefined ? '' : String(value);
+  }
+  const dirEl = form.elements.namedItem('durationDir') as HTMLSelectElement | null;
+  const valEl = form.elements.namedItem('durationValue') as HTMLSelectElement | null;
+  if (dirEl && valEl) {
+    if (qf.minDuration !== undefined) {
+      dirEl.value = 'gt'; valEl.value = String(qf.minDuration);
+    } else {
+      dirEl.value = 'lt'; valEl.value = qf.maxDuration !== undefined ? String(qf.maxDuration) : '';
+    }
   }
 }
 function readFilters(): Filters {
   const values = Object.fromEntries(new FormData(form));
+  const durationVal = values.durationValue === '' ? undefined : Number(values.durationValue);
+  const isLt = values.durationDir !== 'gt';
   return quickFilters({ minHeight: values.minHeight === '' ? undefined : Number(values.minHeight),
-    maxDuration: values.maxDuration === '' ? undefined : Number(values.maxDuration), host: String(values.host || ''), include: String(values.include || ''), exclude: String(values.exclude || '') });
+    maxDuration: isLt ? durationVal : undefined, minDuration: !isLt ? durationVal : undefined,
+    host: String(values.host || ''), include: String(values.include || ''), exclude: String(values.exclude || '') });
 }
 async function refresh(): Promise<void> {
   const version = ++refreshVersion;

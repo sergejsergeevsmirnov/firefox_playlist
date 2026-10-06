@@ -18,7 +18,7 @@ firefox_videoplaylist/
 │   ├── core.ts                    Бизнес-логика: mergeCandidate, matches, enqueue, export
 │   ├── media-policy.ts            isPreviewUrl(), isShortPreview()
 │   ├── capture-policy.ts          identity-функции, captureOrigins, vkResourceCandidates
-│   ├── quick-filters.ts           Пресеты фильтров, encode/decode
+│   ├── quick-filters.ts           Пресеты фильтров (качество/длительность), quickFilters() с minDuration/maxDuration, encode/decode с durationDir
 │   ├── task-pool.ts               TaskPool(concurrency) — async очередь
 │   ├── ui.ts                      DOM-хелперы: $, element, button, send, notify
 │   │

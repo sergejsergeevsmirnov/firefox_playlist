@@ -50,7 +50,7 @@ pnpm run package    # zip → artifacts/
 - **`src/task-pool.ts`** — `TaskPool(concurrency)`: очередь async-задач с ограничением параллелизма
 - **`src/native.ts`** — HTTP-клиент yt-dlp моста: `nativePing()`, `nativeStatus()`, `nativeDownload()`, `nativeCleanup()`, `nativeGetProxy()`, `nativeSetProxy()`
 - **`src/ui.ts`** — DOM-хелперы `$`, `element`, `button`, `send`, `notify`
-- **`src/quick-filters.ts`** — пресеты качества/длительности, encode/decode фильтров
+- **`src/quick-filters.ts`** — пресеты качества/длительности (`qualityPresets`, `durationPresets`), `quickFilters()` (нормализует `minHeight`, `maxDuration`, `minDuration`), encode/decode фильтров в JSON; поддерживает направление `lt`/`gt` через поле `durationDir`
 - **`src/style.css`** — общие стили + layout плеера (см. «UI / Скролл-поведение»)
 - **`src/compact.css`** — компактные стили боковой панели + sticky-механика вкладок
 
@@ -110,6 +110,17 @@ Invoke-WebRequest http://127.0.0.1:8765/status
 - JS (`sidebar.ts`): `ResizeObserver` на `.compact-toolbar` обновляет `--toolbar-height` на `:root` при каждом изменении высоты шапки (шапка динамическая: кнопки могут появляться и исчезать).
 
 После прилипания вкладок скроллируются только карточки видео.
+
+### Фильтр длительности (`sidebar.ts` + `quick-filters.ts`)
+
+Поле «Длительность» разбито на два `<select>` внутри `.duration-filter`:
+- `durationDir` — направление: `lt` (`<`, строго меньше) или `gt` (`>`, больше или равно).
+- `durationValue` — значение из `durationPresets`: 300/600/1200/1800/3600 с или пусто («любая»).
+
+При направлении `lt` → устанавливается `maxDuration` + `durationExclusive: true` (строгое отсечение).  
+При направлении `gt` → устанавливается `minDuration`, `maxDuration` не задаётся.
+
+`encodeFilter` сохраняет `durationDir` в JSON; `decodeFilter` читает его с дефолтом `lt` (обратная совместимость со старыми файлами фильтров).
 
 ### Страница плеера (`player.ts` + `style.css`)
 

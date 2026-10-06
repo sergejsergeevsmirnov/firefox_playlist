@@ -29,6 +29,9 @@
 [hidden] { display: none !important; }
 .vk-foreground-option { display: flex; align-items: center; gap: 6px; }
 .vk-foreground-option input { width: auto; margin: 0; }
+.duration-filter { display: flex; gap: 4px; }
+.duration-filter select:first-child { width: 42px; flex-shrink: 0; padding-right: 2px; }
+.duration-filter select:last-child { flex: 1; min-width: 0; }
 .proxy-label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); margin-bottom: 9px; }
 .proxy-row { display: flex; gap: 5px; }
 .proxy-row input { flex: 1; padding: 7px 8px; font-size: 12px; font-family: monospace; }
