@@ -125,7 +125,7 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
     if (tab.id === undefined) return [];
     try {
       await browser.tabs.update(tab.id, { muted: true });
-      const deadline = Date.now() + 15000;
+      const deadline = Date.now() + 20000;
       let complete = false; let finalUrl = embedUrl;
       while (Date.now() < deadline) {
         budget.throwIfAborted();
@@ -139,76 +139,158 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
           if (!await browser.permissions.contains({ origins: [originPattern(finalUrl)] })) {
             throw new PermissionNeeded([originPattern(finalUrl)]);
           }
-          const result = await browser.scripting.executeScript({
-            target: { tabId: tab.id, allFrames: true },
-            func: (() => {
-              const urls: string[] = [];
-              document.querySelectorAll('video').forEach(v => {
-                const ve = v as HTMLVideoElement;
-                for (const attr of ['src', 'data-src', 'data-video', 'data-url']) {
-                  const s = attr === 'src' ? (ve.currentSrc || ve.src) : (ve.getAttribute(attr) ?? '');
-                  if (s && /^https?:\/\//.test(s) && !urls.includes(s)) urls.push(s);
+          let result: browser.scripting.InjectionResult[] | null = null;
+          try {
+            result = await browser.scripting.executeScript({
+              target: { tabId: tab.id, allFrames: true },
+              func: (async () => {
+                const urls: string[] = [];
+                document.querySelectorAll('video').forEach((v: Element) => {
+                  const ve = v as HTMLVideoElement;
+                  for (const attr of ['src', 'data-src', 'data-video', 'data-url']) {
+                    const s = attr === 'src' ? (ve.currentSrc || ve.src) : (ve.getAttribute(attr) ?? '');
+                    if (s && /^https?:\/\//.test(s) && !urls.includes(s)) urls.push(s);
+                  }
+                  ve.querySelectorAll('source').forEach((src: Element) => {
+                    for (const attr of ['src', 'data-src']) {
+                      const u = (src as HTMLSourceElement).getAttribute(attr) || '';
+                      if (u && /^https?:\/\//.test(u) && !urls.includes(u)) urls.push(u);
+                    }
+                  });
+                  // Trigger lazy-loading players: set src from data-src if not loaded, then play (muted).
+                  ve.muted = true;
+                  if (!ve.src && !ve.currentSrc) {
+                    const lazySrc = ve.getAttribute('data-src') || ve.getAttribute('data-video');
+                    if (lazySrc) ve.src = lazySrc;
+                  }
+                  ve.play().catch(() => {});
+                });
+                // Read player config from JS APIs — available even before the video plays.
+                const tryAdd = (u: unknown) => { const s = String(u ?? ''); if (/^https?:\/\//.test(s) && !urls.includes(s)) urls.push(s); };
+                try {
+                  const jw = (window as any).jwplayer;
+                  if (typeof jw === 'function') {
+                    const readInst = (inst: any) => {
+                      try {
+                        const p = inst?.getConfig?.()?.playlist?.[0];
+                        [...(p?.sources ?? []), p ?? {}].forEach((s: any) => { tryAdd(s?.file); tryAdd(s?.src); });
+                        const item = inst?.getPlaylistItem?.();
+                        if (item) { tryAdd(item.file); (item.sources ?? []).forEach((s: any) => { tryAdd(s?.file); tryAdd(s?.src); }); }
+                      } catch {}
+                    };
+                    readInst(jw());
+                    document.querySelectorAll('[id]').forEach((el: Element) => { try { readInst(jw(el.id)); } catch {}; });
+                  }
+                } catch {}
+                try {
+                  const vjs = (window as any).videojs?.players ?? {};
+                  Object.values(vjs).forEach((p: any) => { try { tryAdd((p as any).currentSrc?.()); } catch {}; });
+                } catch {}
+                // Click common play-button selectors so lazy-loading players start fetching the video.
+                if (urls.length === 0) {
+                  ['.jw-icon-play', '.fp-play', '[class*="play-btn"]', '[class*="playbtn"]', '[class*="play_btn"]', '[class*="playBtn"]',
+                    '[aria-label*="play" i]', '[title*="play" i]', '[class*="player-play"]', '[class*="play-button"]',
+                    '[class*="PlayBtn"]', '[class*="play_button"]', '.video-play', '.player-btn-play'].forEach((sel: string) => {
+                    try { document.querySelectorAll(sel).forEach((el: Element) => (el as HTMLElement).click()); } catch {}
+                  });
+                  // Dispatch synthetic events on video elements to nudge players that need interaction
+                  document.querySelectorAll('video').forEach((ve: Element) => {
+                    try {
+                      ['mousedown', 'mouseup', 'click'].forEach((type: string) => {
+                        ve.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+                      });
+                    } catch {}
+                  });
                 }
-                ve.querySelectorAll('source').forEach(src => {
-                  for (const attr of ['src', 'data-src']) {
-                    const u = src.getAttribute(attr) || '';
-                    if (u && /^https?:\/\//.test(u) && !urls.includes(u)) urls.push(u);
+                // Scan all network requests loaded by this frame — captures video URLs fetched
+                // via XHR or media element even before <video>.currentSrc is populated.
+                performance.getEntriesByType('resource').forEach((e: PerformanceEntry) => {
+                  const u = (e as PerformanceResourceTiming).name;
+                  if (/\.(mp4|webm|m3u8|mpd|ogg|ts)(\?|$)/i.test(u) && !urls.includes(u)) urls.push(u);
+                });
+                // Scan live <script> content for media URLs — finds URLs embedded in
+                // player setup calls (jwplayer, etc.) even before network requests fire.
+                const mediaRe = /https?:\/\/[^\s'"<>{}\[\]\\,|]+\.(?:mp4|webm|m3u8|mpd|flv|mov)(?:\?[^\s'"<>{}\[\]\\,|]*)?/gi;
+                document.querySelectorAll('script').forEach((s: Element) => {
+                  const text = s.textContent || '';
+                  let m: RegExpExecArray | null; mediaRe.lastIndex = 0;
+                  while ((m = mediaRe.exec(text)) !== null) {
+                    if (!urls.includes(m[0])) urls.push(m[0]);
                   }
                 });
-                // Trigger lazy-loading players: set src from data-src if not loaded, then play (muted).
-                ve.muted = true;
-                if (!ve.src && !ve.currentSrc) {
-                  const lazySrc = ve.getAttribute('data-src') || ve.getAttribute('data-video');
-                  if (lazySrc) ve.src = lazySrc;
+                // Re-fetch API/XHR endpoints the player called to extract media URLs from JSON responses.
+                // This catches players that load the video URL via a separate API request (not in HTML).
+                const seen = new Set<string>(urls);
+                const apiRe = /\/(?:api|ajax|player|video|stream|media|embed|get_video|getplayer)\//i;
+                const apiCandidates = performance.getEntriesByType('resource')
+                  .map((e: PerformanceEntry) => (e as PerformanceResourceTiming).name)
+                  .filter((u: string) => {
+                    try { return apiRe.test(new URL(u).pathname) && !/\.(js|css|png|jpg|gif|svg|woff2?|ico|wasm)(\?|$)/i.test(u); }
+                    catch { return false; }
+                  }).slice(0, 8);
+                for (const apiUrl of apiCandidates) {
+                  try {
+                    const r = await fetch(apiUrl, { credentials: 'same-origin', signal: AbortSignal.timeout(2500) });
+                    if (!r.ok) continue;
+                    const ct = r.headers.get('content-type') || '';
+                    if (!/json|text|javascript/i.test(ct)) continue;
+                    const text = await r.text();
+                    const mRe = /https?:\/\/[^\s'"<>{}\[\]\\,|]{4,400}\.(?:mp4|webm|m3u8|mpd|flv|mov)(?:\?[^\s'"<>{}\[\]\\,|]*)?/gi;
+                    let m: RegExpExecArray | null;
+                    while ((m = mRe.exec(text)) !== null) {
+                      if (!seen.has(m[0])) { seen.add(m[0]); urls.push(m[0]); }
+                    }
+                  } catch { /* ignore XHR re-fetch errors */ }
                 }
-                ve.play().catch(() => {});
-              });
-              // Read player config from JS APIs — available even before the video plays.
-              const tryAdd = (u: unknown) => { const s = String(u ?? ''); if (/^https?:\/\//.test(s) && !urls.includes(s)) urls.push(s); };
-              try {
-                const jw = (window as any).jwplayer;
-                if (typeof jw === 'function') {
-                  const readInst = (inst: any) => {
-                    try {
-                      const p = inst?.getConfig?.()?.playlist?.[0];
-                      [...(p?.sources ?? []), p ?? {}].forEach((s: any) => { tryAdd(s?.file); tryAdd(s?.src); });
-                    } catch {}
-                  };
-                  readInst(jw());
-                  document.querySelectorAll('[id]').forEach(el => { try { readInst(jw(el.id)); } catch {}; });
-                }
-              } catch {}
-              try {
-                const vjs = (window as any).videojs?.players ?? {};
-                Object.values(vjs).forEach((p: any) => { try { tryAdd((p as any).currentSrc?.()); } catch {}; });
-              } catch {}
-              // Click common play-button selectors so lazy-loading players start fetching the video.
-              if (urls.length === 0) {
-                ['.jw-icon-play', '.fp-play', '[class*="play-btn"]', '[class*="playbtn"]', '[class*="play_btn"]', '[class*="playBtn"]', '[aria-label*="play" i]', '[title*="play" i]'].forEach(sel => {
-                  try { document.querySelectorAll(sel).forEach(el => (el as HTMLElement).click()); } catch {}
-                });
-              }
-              // Scan all network requests loaded by this frame — captures video URLs fetched
-              // via XHR or media element even before <video>.currentSrc is populated.
-              performance.getEntriesByType('resource').forEach(e => {
-                const u = (e as PerformanceResourceTiming).name;
-                if (/\.(mp4|webm|m3u8|mpd|ogg|ts)(\?|$)/i.test(u) && !urls.includes(u)) urls.push(u);
-              });
-              return urls;
-            }) as () => void
-          });
-          // Combine results from all frames (main document + iframes)
-          const urls = [...new Set((result ?? []).flatMap(r => (r?.result ?? []) as string[]))];
-          if (urls.length) {
-            return urls.flatMap(url => {
-              if (isPreviewUrl(url)) return [];
-              const format = mediaFormat(url) ?? ('file' as const);
-              return [{ url, format, portable: true as const }];
+                return urls;
+              }) as unknown as () => void
             });
-          }
+          } catch { /* executeScript can fail if a frame became unavailable; continue polling */ }
+          // Combine results from all frames (main document + iframes)
+          const rawUrls = [...new Set((result ?? []).flatMap((r: browser.scripting.InjectionResult) => (r?.result ?? []) as string[]))];
+          const foundVars = rawUrls.flatMap((url: string) => {
+            if (isPreviewUrl(url)) return [];
+            const format = mediaFormat(url) ?? ('file' as const);
+            return [{ url, format, portable: true as const }];
+          });
+          if (foundVars.length) return foundVars;
         }
         await new Promise(r => setTimeout(r, 600));
       }
+      // Polling exhausted — no video found in any frame.
+      // Discover embed <iframe> URLs from the main frame (including data-src and
+      // dynamically-set srcs) and try fetching their HTML directly.
+      try {
+        budget.throwIfAborted();
+        if (await browser.permissions.contains({ origins: [originPattern(finalUrl)] })) {
+          const iframeResult = await browser.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: (() => {
+              const srcs: string[] = [];
+              document.querySelectorAll('iframe').forEach(f => {
+                // src attribute (may be absolute or protocol-relative), then data-src fallback
+                const raw = (f as HTMLIFrameElement).src || f.getAttribute('data-src') || f.getAttribute('data-lazy-src') || '';
+                const abs = raw.startsWith('//') ? 'https:' + raw : raw;
+                if (/^https?:\/\//.test(abs) && !srcs.includes(abs)) srcs.push(abs);
+              });
+              return srcs.slice(0, 5);
+            }) as () => void
+          });
+          const iframeSrcs = (iframeResult[0]?.result ?? []) as string[];
+          for (const src of iframeSrcs) {
+            try {
+              budget.throwIfAborted();
+              const ep = await fetchText(src, budget);
+              const ed = new DOMParser().parseFromString(ep.text, 'text/html');
+              const vars = rankSourceCandidates(discoverGeneric(ed, ep.url), undefined)
+                .slice(0, 8).flatMap(c => c.variants).filter(v => !isPreviewUrl(v.url));
+              if (vars.length) return vars.map(v => ({ ...v, portable: true as const }));
+            } catch (e) {
+              if (e instanceof PermissionNeeded) throw e;
+            }
+          }
+        }
+      } catch (e) { if (e instanceof PermissionNeeded) throw e; }
       return [];
     } finally { await browser.tabs.remove(tab.id).catch(() => {}); }
   } finally { embedTabBusy = false; }
@@ -409,7 +491,15 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       const variantEmbeds = (input.variants ?? [])
         .filter(v => v.format === 'file' && !mediaFormat(v.url))
         .map(v => v.url);
-      for (const embedUrl of variantEmbeds) {
+      // For known embed CDN services, reconstruct the embed page URL from the stored (possibly
+      // expired) CDN file URL so we can fetch a fresh video URL without opening the source page.
+      //   pbembed.me: /get_file/2/{hash}/{prefix}/{id}/{id}_*.mp4/ → /embed/{id}/
+      const derivedEmbeds = (input.variants ?? []).flatMap(v => {
+        const pb = /^https?:\/\/pbembed\.me\/get_file\/\d+\/[^/]+\/\d+\/(\d+)\//i.exec(v.url);
+        if (pb) return [`https://pbembed.me/embed/${pb[1]}/`];
+        return [];
+      });
+      for (const embedUrl of [...variantEmbeds, ...derivedEmbeds]) {
         // 1) Static HTML first — embed services often allow headless fetch and may carry
         //    the video URL in a <script> variable or JSON-LD.
         try {
@@ -430,6 +520,7 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
           if (vars.length) {
             const r = await resolveStreams({ ...input, variants: vars }, budget);
             if (r.status === 'ready') return r;
+            attempts.push(r);
           }
         } catch (tabErr) {
           if (tabErr instanceof PermissionNeeded)
@@ -443,12 +534,17 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
         if (vars.length) {
           const result = await resolveStreams({ ...input, variants: vars }, budget);
           if (result.status === 'ready') return result;
+          attempts.push(result);
         }
       } catch (tabError) {
         if (tabError instanceof PermissionNeeded) {
           return { status: 'site', reason: tabError.message, requiredOrigins: [...new Set([...allOrigins(), ...tabError.origins])] };
         }
       }
+      // If background-tab probing found the video URL but couldn't verify the CDN
+      // (missing host permission), surface a permission request instead of a generic error.
+      const cdnMissing = allOrigins();
+      if (cdnMissing.length) return { status: 'site', reason: 'Нужен доступ к CDN видео для проверки источника.', requiredOrigins: cdnMissing };
       return { status: 'error', reason: 'Firefox не смог загрузить источник. Возможны блокировка запроса, перенаправление на другой сайт или недоступность сервера. Откройте источник и включите сбор на его вкладке. Подробности: ' + reason, requiredOrigins: [] };
     }
     return { status: 'error', reason, requiredOrigins: [] };
