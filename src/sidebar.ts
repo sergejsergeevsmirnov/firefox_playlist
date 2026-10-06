@@ -41,6 +41,24 @@ for (const duration of durationPresets) {
   const option = element('option', duration === 3600 ? '1 ч' : `${duration / 60} м`); option.value = String(duration);
   $('select[name="durationValue"]').append(option);
 }
+// Approved-origins database: persists granted host permissions across restarts and updates
+// so the user doesn't have to re-grant them every session.
+const APPROVED_KEY = 'videoQueueApprovedOrigins';
+async function loadApproved(): Promise<string[]> {
+  const data = await browser.storage.local.get(APPROVED_KEY);
+  return Array.isArray(data[APPROVED_KEY]) ? data[APPROVED_KEY] as string[] : [];
+}
+async function appendApproved(origins: string[]): Promise<void> {
+  const current = await loadApproved();
+  await browser.storage.local.set({ [APPROVED_KEY]: [...new Set([...current, ...origins])] });
+}
+let missingApproved: string[] = [];
+async function syncApproved(): Promise<void> {
+  const saved = await loadApproved();
+  const missing: string[] = [];
+  for (const o of saved) if (!await browser.permissions.contains({ origins: [o] })) missing.push(o);
+  missingApproved = missing;
+}
 let state = emptyState(); let sessions: Record<number, Session> = {}; let activeTab: browser.tabs.Tab | undefined;
 let formLoaded = false; let refreshVersion = 0;
 let renderedSignature = '';
@@ -77,12 +95,15 @@ async function refresh(): Promise<void> {
   state = data.state; sessions = data.sessions; activeTab = tabs[0];
   if (!formLoaded) { populate(state.filters); formLoaded = true; }
   const signature = JSON.stringify({ queue: state.queue, filters: state.filters, sessions, tab: activeTab?.id, url: activeTab?.url,
+    missingApproved,
     videos: Object.values(state.videos).map(({ position: _position, ...video }) => video) });
   if (signature !== renderedSignature) { renderedSignature = signature; render(); }
 }
 async function grant(origins: string[]): Promise<void> {
   const granted = await browser.permissions.request({ origins });
   if (!granted) { notify('Доступ не предоставлен. Ссылка на источник сохранена.'); return; }
+  await appendApproved(origins);
+  await syncApproved();
   await send('permissionsChanged'); notify('Доступ разрешён. Повторная проверка запущена.'); await refresh();
 }
 function card(video: Video, inQueue: boolean, index = 0): HTMLElement {
@@ -138,9 +159,14 @@ function render(): void {
   $('#collect').textContent = session ? 'Остановить сбор' : 'Собирать на этой вкладке';
   $<HTMLButtonElement>('#collect').disabled = !httpUrl(activeTab?.url);
   const frameAccess = $('#frame-access'); frameAccess.replaceChildren();
-  const origins = [...new Set(Object.values(state.videos).flatMap(v => v.requiredOrigins))];
-  if (origins.length) frameAccess.append(button(`Разрешить источники (${origins.length})`, () => grant(origins), 'wide'));
-  else if (session?.frameOrigins.length) frameAccess.append(button('Разрешить встроенные плееры', () => grant(session.frameOrigins), 'text-button'));
+  const videoOrigins = [...new Set(Object.values(state.videos).flatMap(v => v.requiredOrigins))];
+  const allNeeded = [...new Set([...videoOrigins, ...missingApproved])];
+  if (allNeeded.length) {
+    const label = !videoOrigins.length && missingApproved.length
+      ? `Восстановить разрешения (${allNeeded.length})`
+      : `Разрешить источники (${allNeeded.length})`;
+    frameAccess.append(button(label, () => grant(allNeeded), 'wide'));
+  } else if (session?.frameOrigins.length) frameAccess.append(button('Разрешить встроенные плееры', () => grant(session.frameOrigins), 'text-button'));
   $('#queue-count').textContent = String(state.queue.length);
   $('#queue').replaceChildren(...state.queue.map((id, i) => card(state.videos[id], true, i)));
   if (!state.queue.length) $('#queue').append(element('p', 'Здесь появятся видео, прошедшие проверку и фильтры.', 'empty'));
@@ -207,6 +233,9 @@ browser.storage.onChanged.addListener(() => { void refresh().catch(notifyError);
 browser.tabs.onActivated.addListener(() => { void refresh().catch(notifyError); });
 browser.tabs.onUpdated.addListener((_id, change) => { if (change.url) void refresh().catch(notifyError); });
 void refresh().catch(notifyError);
+// Check for approved origins that are missing (e.g. after extension update) and trigger
+// a re-render so the "Восстановить разрешения" button appears if needed.
+void syncApproved().then(() => refresh()).catch(notifyError);
 void send<{ available?: boolean; error?: string }>('nativeStatus').then(res => {
   $('#version').textContent += res.available ? ' · yt-dlp: ✓' : ` · yt-dlp: ✗ (${res.error || '?'})`;
 }).catch(error => { $('#version').textContent += ` · yt-dlp: ✗ (${error instanceof Error ? error.message : String(error)})`; });
