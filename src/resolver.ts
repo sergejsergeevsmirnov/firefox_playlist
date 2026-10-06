@@ -129,13 +129,15 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
       let complete = false; let finalUrl = embedUrl;
       while (Date.now() < deadline) {
         budget.throwIfAborted();
-        if (!complete) {
-          const current = await browser.tabs.get(tab.id);
-          if (current.url) finalUrl = current.url;
-          if (current.status === 'complete') complete = true;
-        }
+        // Always read the current tab URL so JS-redirects (that fire after 'complete')
+        // are also captured. porno-bomba.net → 11.porno-bomba.net is a JS redirect that
+        // happens AFTER the initial page reaches 'complete', so we must keep polling the URL.
+        const current = await browser.tabs.get(tab.id);
+        if (current.url && current.url !== 'about:blank') finalUrl = current.url;
+        if (!complete && current.status === 'complete') complete = true;
         if (complete) {
-          // After a redirect (e.g. http → https) the tab's URL changes — require permission for it.
+          // After a redirect (http → https or JS-driven) the tab URL changes —
+          // require permission for the destination before injecting scripts.
           if (!await browser.permissions.contains({ origins: [originPattern(finalUrl)] })) {
             throw new PermissionNeeded([originPattern(finalUrl)]);
           }
