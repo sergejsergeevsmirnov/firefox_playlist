@@ -688,17 +688,6 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
               const r = await resolveStreams({ ...input, variants: vars }, budget);
               console.log('[yandex-fallback] resolveStreams status:', r.status);
               if (r.status === 'ready') return r;
-              // CDN signed URLs can expire before verification completes.
-              // If we have HLS/DASH manifests and resolveStreams failed (not permissions),
-              // trust them anyway — the player will get a fresh token on re-check.
-              const manifests = vars.filter(v => v.format === 'hls' || v.format === 'dash');
-              if (manifests.length && !(r.requiredOrigins ?? []).length) {
-                console.log('[yandex-fallback] accepting manifests without verification (CDN may have expired)');
-                return { status: 'ready', variants: manifests,
-                  duration: input.duration ?? input.expectedDuration, title: input.title,
-                  reason: 'Найдено через Яндекс Видео. CDN-ссылки могут истечь — нажмите «Проверить снова» при ошибке воспроизведения.',
-                  requiredOrigins: [] };
-              }
               attempts.push(r);
             }
           } catch (tabErr) {
