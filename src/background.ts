@@ -116,7 +116,7 @@ function schedule(id: string, tab?: number, token?: string, allowBrowser = false
         }
         Object.assign(state.videos[id], result);
         const blocked = Object.values(sessions).flatMap(s => s.previewUrls ?? []);
-        state.videos[id].variants = state.videos[id].variants.filter(v => !isPreviewUrl(v.url) && !blocked.includes(v.url));
+        state.videos[id].variants = state.videos[id].variants.filter(v => (!isPreviewUrl(v.url) || isYandexVideo(v.url)) && !blocked.includes(v.url));
         if (state.videos[id].status === 'ready' && !state.videos[id].variants.length) {
           state.videos[id].status = 'site'; state.videos[id].reason = 'Найдено только превью. Нужен полный поток с сайта-источника.';
         }
