@@ -163,7 +163,16 @@ async function load(id: string, autoplay: boolean, resume?: number): Promise<voi
   metadataTimeout = setTimeout(() => { void fail('Источник не ответил за 25 секунд', generation); }, 25000);
   video.onerror = () => { void fail(`Ошибка загрузки видео (code ${video.error?.code ?? '?'}${video.error?.message ? ': ' + video.error.message : ''})`, generation); };
   if (currentVariant.format === 'hls' && Hls.isSupported()) {
-    hls = new Hls({ enableWorker: false, autoStartLoad: true });
+    hls = new Hls({
+      enableWorker: false, autoStartLoad: true,
+      fetchSetup: (context, initParams) => {
+        try {
+          if (/(^|\.)phncdn\.com$/.test(new URL(context.url).hostname))
+            return new Request(context.url, { ...initParams, referrer: 'https://www.pornhub.com/' });
+        } catch {}
+        return new Request(context.url, initParams);
+      },
+    });
     const instance = hls;
     instance.on(Hls.Events.MANIFEST_PARSED, () => {
       if (generation !== loadGeneration) return;
