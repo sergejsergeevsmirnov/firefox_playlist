@@ -20,13 +20,25 @@ const activeDownloads = new Map<string, Promise<{ url: string }>>();
 const requestSessions = new Map<string, { tab: number; token: string }>();
 const extensionRoot = browser.runtime.getURL('');
 let writeChain: Promise<unknown> = Promise.resolve();
+// Cache broad access flag — set on startup and after permissionsChanged.
+let _broadAccess = false;
+async function refreshBroadAccess(): Promise<void> {
+  _broadAccess = await browser.permissions.contains({ origins: ['http://*/*', 'https://*/*'] });
+}
+// Returns true when access to any http/https site is granted (either via host_permissions or
+// broad optional grant). Avoids false-negative from contains() on a specific origin pattern
+// when the extension already holds a superset wildcard.
+async function hasAccess(origin: string): Promise<boolean> {
+  return _broadAccess || browser.permissions.contains({ origins: [origin] });
+}
 const ready = Promise.all([browser.storage.local.get('state'), browser.storage.session.get('sessions')]).then(async ([local, transient]) => {
+  await refreshBroadAccess();
   state = restoreState(local.state); sessions = transient.sessions ?? {};
   state.filters = quickFilters(state.filters);
   for (const video of Object.values(state.videos)) {
     if (video.status === 'ready') continue;
     const missing: string[] = [];
-    for (const origin of captureOrigins(video.sourceUrl)) if (!await browser.permissions.contains({origins:[origin]})) missing.push(origin);
+    for (const origin of captureOrigins(video.sourceUrl)) if (!await hasAccess(origin)) missing.push(origin);
     if (missing.length) {
       video.status = 'site'; video.requiredOrigins = missing;
       video.reason = 'Нужен доступ к сайту и CDN для обнаружения потока. После разрешения включите сбор на странице ролика и перезагрузите её.';
@@ -37,7 +49,7 @@ const ready = Promise.all([browser.storage.local.get('state'), browser.storage.s
     if (video.status === 'ready' || !provider) continue;
     const missing: string[] = [];
     for (const origin of [provider === 'OK' ? 'https://ok.ru/*' : 'https://dzen.ru/*', 'https://*.okcdn.ru/*']) {
-      if (!await browser.permissions.contains({origins:[origin]})) missing.push(origin);
+      if (!await hasAccess(origin)) missing.push(origin);
     }
     if (missing.length) {
       video.status = 'site'; video.requiredOrigins = missing;
@@ -48,7 +60,7 @@ const ready = Promise.all([browser.storage.local.get('state'), browser.storage.s
   for (const video of Object.values(state.videos)) {
     if (video.status !== 'error' || !/NetworkError|Failed to fetch/i.test(video.reason ?? '') || !video.sourceUrl.startsWith('http:')) continue;
     const secureOrigin = originPattern(video.sourceUrl).replace(/^http:/, 'https:');
-    if (!await browser.permissions.contains({ origins: [secureOrigin] })) {
+    if (!await hasAccess(secureOrigin)) {
       video.status = 'site'; video.requiredOrigins = [secureOrigin];
       video.reason = 'Разрешите доступ к HTTPS-версии источника для повторной проверки.';
     }
@@ -191,7 +203,7 @@ async function syncScriptsNow(): Promise<void> {
 async function inject(tabId: number): Promise<void> {
   const frames = await browser.webNavigation.getAllFrames({ tabId }) ?? [];
   await Promise.allSettled(frames.filter(f => httpUrl(f.url)).map(async f => {
-    if (await browser.permissions.contains({ origins: [originPattern(f.url)] })) {
+    if (await hasAccess(originPattern(f.url))) {
       await browser.scripting.executeScript({ target: { tabId, frameIds: [f.frameId] }, files: ['content.js'] });
     }
   }));
@@ -212,7 +224,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       await ready;
       const tab = sender.tab?.id; if (tab === undefined || !sessions[tab]) return { ok: false };
       const pageUrl = httpUrl(message.pageUrl); if (!pageUrl || pageUrl !== sender.url) return { ok: false };
-      if (!await browser.permissions.contains({ origins: [originPattern(pageUrl)] })) return { ok: false };
+      if (!await hasAccess(originPattern(pageUrl))) return { ok: false };
       const liveTab = await browser.tabs.get(tab);
       if (sender.frameId === 0 && pageUrl !== liveTab.url) return { ok: false };
       if (liveTab.url !== sessions[tab].url) {
@@ -263,7 +275,7 @@ async function handleUI(message: { type: string; [key: string]: any }): Promise<
     case 'start': {
       const tab = await browser.tabs.get(message.tabId);
       if (tab.id === undefined || !httpUrl(tab.url)) throw new Error('Откройте обычную HTTP/HTTPS-страницу');
-      if (!await browser.permissions.contains({ origins: [originPattern(tab.url!)] })) throw new Error('Доступ к странице не предоставлен');
+      if (!await hasAccess(originPattern(tab.url!))) throw new Error('Доступ к странице не предоставлен');
       await mutate(() => { sessions[tab.id!] = {...newSession(tab.url!),vkForeground:message.vkForeground === true}; state.dismissed = []; });
       await syncScripts(); await inject(tab.id);
       // If inject hit a timing gap (executeScript race with old instance), tell any
@@ -316,6 +328,7 @@ async function handleUI(message: { type: string; [key: string]: any }): Promise<
       schedule(video.id, undefined, undefined, message.allowBrowser === true, message.vkForeground === true); return { ok: true };
     }
     case 'permissionsChanged': {
+      await refreshBroadAccess();
       await syncScripts();
       await Promise.allSettled(Object.keys(sessions).map(id => inject(Number(id))));
       const ids = Object.values(state.videos).filter(v => v.requiredOrigins.length).map(v => v.id);

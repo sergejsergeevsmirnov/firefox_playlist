@@ -11,7 +11,7 @@
     }
   },
   "permissions": ["storage", "scripting", "activeTab", "tabs", "webRequest", "webNavigation"],
-  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "background": { "scripts": ["background.js"] },
   "web_accessible_resources": [
     { "resources": ["pot.js"], "matches": ["https://*.youtube.com/*"] }
