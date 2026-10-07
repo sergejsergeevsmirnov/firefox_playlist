@@ -110,6 +110,7 @@ export async function probeFile(variant: Variant): Promise<{ variant: Variant; d
   const host = new URL(variant.url).hostname;
   const init: RequestInit = { method: 'GET', credentials: 'omit', headers: { Range: 'bytes=0-1023' } };
   if (/(^|\.)googlevideo\.com$/.test(host)) init.referrer = 'https://www.youtube.com/';
+  else if (/(^|\.)phncdn\.com$/.test(host)) init.referrer = 'https://www.pornhub.com/';
   else init.referrerPolicy = 'no-referrer';
   const response = await fetch(variant.url, init);
   const ok = response.ok || response.status === 206;
@@ -739,7 +740,14 @@ async function resolveStreams(input: Video, budget: AbortSignal): Promise<Partia
               : [...new Map(info.resourceUrls.map(r => [originPattern(r), r])).values()];
             if (stream.format === 'dash' && new Set(info.resourceUrls).size > 32) portable = false;
             for (const resource of probes) {
-              const check = await fetch(resource, { credentials: 'omit', headers: { Range: 'bytes=0-1023' }, signal: budget, referrerPolicy: 'no-referrer' });
+              const rHost = new URL(resource).hostname;
+              const rReferer = /(^|\.)phncdn\.com$/.test(rHost) ? 'https://www.pornhub.com/'
+                : /(^|\.)googlevideo\.com$/.test(rHost) ? 'https://www.youtube.com/'
+                : undefined;
+              const check = await fetch(resource, {
+                credentials: 'omit', headers: { Range: 'bytes=0-1023' }, signal: budget,
+                ...(rReferer ? { referrer: rReferer } : { referrerPolicy: 'no-referrer' }),
+              });
               portable = portable && check.ok;
               await check.body?.cancel();
               if (!check.ok) throw new Error(`Медиасегмент недоступен: HTTP ${check.status}`);
