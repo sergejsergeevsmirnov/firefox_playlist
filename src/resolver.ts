@@ -659,7 +659,10 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
           const vars = await readEmbedPlayer(fallbackUrl, budget);
           if (vars.length) {
             const r = await resolveStreams({ ...input, variants: vars }, budget);
-            if (r.status === 'ready') return r;
+            if (r.status === 'ready') {
+              const yandexVar = { url: fallbackUrl, format: 'file' as const };
+              return { ...r, variants: [...(r.variants ?? []), yandexVar] };
+            }
             attempts.push(r);
           }
         } catch (tabErr) {
@@ -688,7 +691,13 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
             if (vars.length) {
               const r = await resolveStreams({ ...input, variants: vars }, budget);
               console.log('[yandex-fallback] resolveStreams status:', r.status);
-              if (r.status === 'ready') return r;
+              if (r.status === 'ready') {
+                // Re-attach the Yandex preview URL as a variant so it survives
+                // Object.assign in background.ts and stays available for future re-checks.
+                // Without this the Yandex URL is lost after the first successful check.
+                const yandexVar = { url: fallbackUrl, format: 'file' as const };
+                return { ...r, variants: [...(r.variants ?? []), yandexVar] };
+              }
               attempts.push(r);
             }
           } catch (tabErr) {
