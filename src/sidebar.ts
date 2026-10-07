@@ -1,11 +1,11 @@
 import './style.css';
 import './compact.css';
-import { exportPlaylist, formatTime, matches, originPattern, httpUrl } from './core';
+import { exportPlaylist, formatTime, matches, httpUrl } from './core';
 import { defaultFilters, emptyState, type Filters, type Session, type Video } from './model';
 import { $, element, button, link, getState, send, notify, notifyError } from './ui';
 import { quickFilters, qualityPresets, durationPresets, encodeFilter, decodeFilter } from './quick-filters';
 import { dzenPageUrl } from './dzen';
-import { captureOrigins, vkIdentity } from './capture-policy';
+import { vkIdentity } from './capture-policy';
 
 $('#app').innerHTML = `
   <header class="compact-toolbar">
@@ -196,16 +196,20 @@ $('#collect').onclick = () => {
   if (activeTab?.id === undefined || !activeTab.url) return;
   const tabId = activeTab.id;
   if (sessions[tabId]) { void send('stop', { tabId }).then(refresh).catch(notifyError); return; }
-  const pageOrigins = [...new Set([originPattern(activeTab.url), ...captureOrigins(activeTab.url)])];
-  // Bundle previously approved (but now missing) origins into the same permission request so
-  // the user confirms everything in ONE Firefox dialog instead of clicking "Разрешить" for each
-  // CDN domain that was lost after an extension update or reinstall.
-  const allOrigins = [...new Set([...pageOrigins, ...missingApproved])];
-  void browser.permissions.request({ origins: allOrigins }).then(async granted => {
-    if (!granted) { notify('Для сбора нужен доступ к этой странице.'); return; }
-    await Promise.all([syncApproved(), syncBroadAccess()]);
-    await send('start', { tabId, vkForeground:$<HTMLInputElement>('#vk-foreground').checked }); await refresh(); notify('Сбор включён. Прокручивайте страницу, чтобы находить новые ролики.');
-  }).catch(notifyError);
+  void (async () => {
+    if (!broadAccess) {
+      // Firefox only accepts request() for origins explicitly listed in optional_host_permissions.
+      // Specific patterns like https://yandex.ru/* are NOT listed — only the broad wildcards are.
+      // Requesting BROAD grants access to all sites in one dialog and is always accepted.
+      const granted = await browser.permissions.request({ origins: BROAD });
+      if (!granted) { notify('Для сбора нужен доступ к сайтам. Нажмите «Разрешить» в диалоге Firefox.'); return; }
+      await Promise.all([syncApproved(), syncBroadAccess()]);
+      await send('permissionsChanged');
+    }
+    await send('start', { tabId, vkForeground: $<HTMLInputElement>('#vk-foreground').checked });
+    await refresh();
+    notify('Сбор включён. Прокручивайте страницу, чтобы находить новые ролики.');
+  })().catch(notifyError);
 };
 $('#stop-foreground').onclick = () => {
   void Promise.all(Object.entries(sessions).filter(([,session])=>session.vkForeground).map(([id])=>send('stop',{tabId:Number(id)}))).then(refresh).catch(notifyError);

@@ -156,7 +156,7 @@ function cleanCandidate(raw: Candidate): Candidate | undefined {
     title: raw.title.slice(0, 500), thumbnail: httpUrl(raw.thumbnail), duration: finite(raw.duration), expectedDuration: finite(raw.expectedDuration),
     discovery: raw.discovery === 'catalog' || raw.discovery === 'structured' ? raw.discovery : undefined,
     live: typeof raw.live === 'boolean' ? raw.live : undefined,
-    variants: raw.variants.slice(0, 24).filter(v => httpUrl(v.url) && !isPreviewUrl(v.url) && ['file', 'hls', 'dash', 'youtube'].includes(v.format)).map(v => ({
+    variants: raw.variants.slice(0, 24).filter(v => httpUrl(v.url) && (!isPreviewUrl(v.url) || isYandexVideo(v.url)) && ['file', 'hls', 'dash', 'youtube'].includes(v.format)).map(v => ({
       url: v.url, format: v.format, width: finite(v.width), height: finite(v.height),
     })),
   };
