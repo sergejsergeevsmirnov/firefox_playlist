@@ -633,12 +633,30 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       // (missing host permission), surface a permission request instead of a generic error.
       const cdnMissing = allOrigins();
       if (cdnMissing.length) return { status: 'site', reason: 'Нужен доступ к CDN видео для проверки источника.', requiredOrigins: cdnMissing };
+      // Before giving up, try Yandex preview fallback in case the source is blocked for bots.
+      const yandexFallbacksNet = (input.variants ?? [])
+        .filter(v => v.format === 'file' && !mediaFormat(v.url) && isYandexVideo(v.url))
+        .map(v => v.url);
+      for (const fallbackUrl of yandexFallbacksNet) {
+        try {
+          const vars = await readEmbedPlayer(fallbackUrl, budget);
+          if (vars.length) {
+            const r = await resolveStreams({ ...input, variants: vars }, budget);
+            if (r.status === 'ready') return r;
+            attempts.push(r);
+          }
+        } catch (tabErr) {
+          if (tabErr instanceof PermissionNeeded)
+            return { status: 'site', reason: tabErr.message, requiredOrigins: [...new Set([...allOrigins(), ...tabErr.origins])] };
+        }
+      }
       return { status: 'error', reason: 'Firefox не смог загрузить источник. Возможны блокировка запроса, перенаправление на другой сайт или недоступность сервера. Откройте источник и включите сбор на его вкладке. Подробности: ' + reason, requiredOrigins: [] };
     }
-    // HTTP 4xx: external source page is gone — try Yandex preview URL stored as a fallback
-    // variant. The Yandex player loads a working CDN URL regardless of external site status.
+    // HTTP 4xx or timeout: external source page is gone or not responding —
+    // try Yandex preview URL stored as a fallback variant.
+    // The Yandex player loads a working CDN URL regardless of external site status.
     // Skip static fetch (Yandex is a React SPA) and go straight to background tab.
-    if (/HTTP 4\d\d/.test(reason)) {
+    if (/HTTP 4\d\d|не ответил за \d+ секунд/i.test(reason)) {
       const yandexFallbacks = (input.variants ?? [])
         .filter(v => v.format === 'file' && !mediaFormat(v.url) && isYandexVideo(v.url))
         .map(v => v.url);
