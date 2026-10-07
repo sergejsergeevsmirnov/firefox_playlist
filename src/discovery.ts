@@ -201,8 +201,15 @@ export function discoverYandex(doc: Document, pageUrl: string): Candidate[] {
     const duration = parseDuration(video.duration ?? data.duration)
       ?? parseDuration(card.querySelector('.serp-item__duration, .VideoCard-Duration, .VideoThumb3Meta-Duration, [data-testid="duration"]')?.textContent);
     const image = card.querySelector('img');
+    // Save the Yandex preview URL as a fallback variant so the resolver can open it in a
+    // background tab when the external source URL is gone or blocked. Yandex always has a
+    // working player URL (its own CDN or an embed service like p0sembed.com).
+    const yandexPreviewHref = [...card.querySelectorAll('a[href]')]
+      .map(a => httpUrl(a.getAttribute('href'), pageUrl))
+      .find(u => !!u && isYandexVideo(u) && /\/video\/preview\//.test(u));
+    const variants: Variant[] = yandexPreviewHref ? [{ url: yandexPreviewHref, format: 'file' }] : [];
     found.push({ sourceUrl: source, identity: `page:${source}`, title, duration, expectedDuration: duration, discovery: 'catalog',
-      thumbnail: httpUrl(image?.getAttribute('src') || image?.getAttribute('data-src') || card.querySelector('video[poster]')?.getAttribute('poster'), pageUrl), variants: [] });
+      thumbnail: httpUrl(image?.getAttribute('src') || image?.getAttribute('data-src') || card.querySelector('video[poster]')?.getAttribute('poster'), pageUrl), variants });
   }
   return [...new Map(found.map(c => [candidateId(c), c])).values()];
 }

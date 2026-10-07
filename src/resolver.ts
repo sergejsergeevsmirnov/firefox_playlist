@@ -1,4 +1,4 @@
-import { discoverGeneric, rankSourceCandidates } from './discovery';
+import { discoverGeneric, isYandexVideo, rankSourceCandidates } from './discovery';
 import { httpUrl, mediaFormat, originPattern } from './core';
 import { parseDash, parseHls } from './manifests';
 import type { Candidate, Video, Variant } from './model';
@@ -634,6 +634,30 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       const cdnMissing = allOrigins();
       if (cdnMissing.length) return { status: 'site', reason: 'Нужен доступ к CDN видео для проверки источника.', requiredOrigins: cdnMissing };
       return { status: 'error', reason: 'Firefox не смог загрузить источник. Возможны блокировка запроса, перенаправление на другой сайт или недоступность сервера. Откройте источник и включите сбор на его вкладке. Подробности: ' + reason, requiredOrigins: [] };
+    }
+    // HTTP 4xx: external source page is gone — try Yandex preview URL stored as a fallback
+    // variant. The Yandex player loads a working CDN URL regardless of external site status.
+    // Skip static fetch (Yandex is a React SPA) and go straight to background tab.
+    if (/HTTP 4\d\d/.test(reason)) {
+      const yandexFallbacks = (input.variants ?? [])
+        .filter(v => v.format === 'file' && !mediaFormat(v.url) && isYandexVideo(v.url))
+        .map(v => v.url);
+      if (yandexFallbacks.length) {
+        const allOriginsY = () => [...new Set(attempts.flatMap(a => a.requiredOrigins ?? []))];
+        for (const fallbackUrl of yandexFallbacks) {
+          try {
+            const vars = await readEmbedPlayer(fallbackUrl, budget);
+            if (vars.length) {
+              const r = await resolveStreams({ ...input, variants: vars }, budget);
+              if (r.status === 'ready') return r;
+              attempts.push(r);
+            }
+          } catch (tabErr) {
+            if (tabErr instanceof PermissionNeeded)
+              return { status: 'site', reason: tabErr.message, requiredOrigins: [...new Set([...allOriginsY(), ...tabErr.origins])] };
+          }
+        }
+      }
     }
     return { status: 'error', reason, requiredOrigins: [] };
   }
