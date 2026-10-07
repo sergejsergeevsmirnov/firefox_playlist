@@ -17,10 +17,14 @@ export class PermissionNeeded extends Error {
   canonicalUrl?: string;
   constructor(public origins: string[]) { super('Нужен доступ к сайту для проверки источника'); }
 }
+async function hasOriginAccess(origin: string): Promise<boolean> {
+  if (await browser.permissions.contains({ origins: ['http://*/*', 'https://*/*'] })) return true;
+  return browser.permissions.contains({ origins: [origin] });
+}
 export async function requireAccess(url: string): Promise<void> {
   if (!httpUrl(url)) throw new Error('Неподдерживаемый адрес');
   const origin = originPattern(url);
-  if (!await browser.permissions.contains({ origins: [origin] })) throw new PermissionNeeded([origin]);
+  if (!await hasOriginAccess(origin)) throw new PermissionNeeded([origin]);
 }
 async function fetchText(url: string, budget?: AbortSignal, maxBytes = 2 * 1024 * 1024, referrer?: string, detectRedirects = false): Promise<{ text: string; url: string; mime: string }> {
   // Catalogs can retain HTTP links to HTTPS-only hosts. Obtain both scheme
@@ -44,7 +48,7 @@ async function fetchText(url: string, budget?: AbortSignal, maxBytes = 2 * 1024 
     } catch { /* pre-flight failed; proceed with known origins only */ }
   }
   const missing: string[] = [];
-  for (const origin of origins) if (!await browser.permissions.contains({ origins: [origin] })) missing.push(origin);
+  for (const origin of origins) if (!await hasOriginAccess(origin)) missing.push(origin);
   if (missing.length) throw new PermissionNeeded(missing);
   await requireAccess(url);
   const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 12000);
@@ -55,7 +59,7 @@ async function fetchText(url: string, budget?: AbortSignal, maxBytes = 2 * 1024 
     if (!response.ok) throw new Error(`Источник ответил HTTP ${response.status}`);
     // Inline permission check for the redirect destination (replaces requireAccess so we can
     // attach canonicalUrl to the error when a cross-domain redirect was discovered).
-    if (!await browser.permissions.contains({ origins: [originPattern(response.url)] })) {
+    if (!await hasOriginAccess(originPattern(response.url))) {
       const err = new PermissionNeeded([originPattern(response.url)]);
       if (response.url !== url) err.canonicalUrl = response.url;
       throw err;
@@ -118,15 +122,18 @@ export async function probeFile(variant: Variant): Promise<{ variant: Variant; d
 }
 let embedTabBusy = false;
 async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<Variant[]> {
+  console.log('[embed] readEmbedPlayer start:', embedUrl, 'busy:', embedTabBusy);
   if (embedTabBusy) return [];
   embedTabBusy = true;
   try {
     const tab = await browser.tabs.create({ url: embedUrl, active: false });
+    console.log('[embed] tab created id:', tab.id, 'url:', tab.url);
     if (tab.id === undefined) return [];
     try {
       await browser.tabs.update(tab.id, { muted: true });
       const deadline = Date.now() + 20000;
       let complete = false; let finalUrl = embedUrl;
+      let pollCount = 0;
       while (Date.now() < deadline) {
         budget.throwIfAborted();
         // Always read the current tab URL so JS-redirects (that fire after 'complete')
@@ -134,11 +141,13 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
         // happens AFTER the initial page reaches 'complete', so we must keep polling the URL.
         const current = await browser.tabs.get(tab.id);
         if (current.url && current.url !== 'about:blank') finalUrl = current.url;
-        if (!complete && current.status === 'complete') complete = true;
+        if (!complete && current.status === 'complete') { complete = true; console.log('[embed] complete, finalUrl:', finalUrl); }
         if (complete) {
+          pollCount++;
           // After a redirect (http → https or JS-driven) the tab URL changes —
           // require permission for the destination before injecting scripts.
-          if (!await browser.permissions.contains({ origins: [originPattern(finalUrl)] })) {
+          const hasBroadR = await browser.permissions.contains({ origins: ['http://*/*', 'https://*/*'] });
+          if (!hasBroadR && !await browser.permissions.contains({ origins: [originPattern(finalUrl)] })) {
             throw new PermissionNeeded([originPattern(finalUrl)]);
           }
           let result: browser.scripting.InjectionResult[] | null = null;
@@ -247,24 +256,29 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
                 return urls;
               }) as unknown as () => void
             });
-          } catch { /* executeScript can fail if a frame became unavailable; continue polling */ }
+          } catch (execErr) { console.log('[embed] executeScript error poll', pollCount, ':', execErr instanceof Error ? execErr.message : execErr); }
           // Combine results from all frames (main document + iframes)
           const rawUrls = [...new Set((result ?? []).flatMap((r: browser.scripting.InjectionResult) => (r?.result ?? []) as string[]))];
+          console.log('[embed] poll', pollCount, 'frames:', result?.length ?? 0, 'rawUrls:', rawUrls.length, rawUrls.slice(0, 3));
           const foundVars = rawUrls.flatMap((url: string) => {
             if (isPreviewUrl(url)) return [];
+            // Skip individual HLS/DASH segment files — only keep manifests and full files.
+            if (/\/seg-\d+-[^/?#]*\.ts(\?|$)/i.test(url)) return [];
             const format = mediaFormat(url) ?? ('file' as const);
             return [{ url, format, portable: true as const }];
           });
-          if (foundVars.length) return foundVars;
+          if (foundVars.length) { console.log('[embed] found', foundVars.length, 'vars:', foundVars.map(v => v.url)); return foundVars; }
         }
         await new Promise(r => setTimeout(r, 600));
       }
+      console.log('[embed] polling exhausted, polls after complete:', pollCount, 'finalUrl:', finalUrl);
       // Polling exhausted — no video found in any frame.
       // Discover embed <iframe> URLs from the main frame (including data-src and
       // dynamically-set srcs) and try fetching their HTML directly.
       try {
         budget.throwIfAborted();
-        if (await browser.permissions.contains({ origins: [originPattern(finalUrl)] })) {
+        const hasBroadR2 = await browser.permissions.contains({ origins: ['http://*/*', 'https://*/*'] });
+        if (hasBroadR2 || await browser.permissions.contains({ origins: [originPattern(finalUrl)] })) {
           const iframeResult = await browser.scripting.executeScript({
             target: { tabId: tab.id },
             func: (() => {
@@ -279,6 +293,7 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
             }) as () => void
           });
           const iframeSrcs = (iframeResult[0]?.result ?? []) as string[];
+          console.log('[embed] iframe srcs found:', iframeSrcs);
           for (const src of iframeSrcs) {
             try {
               budget.throwIfAborted();
@@ -286,6 +301,7 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
               const ed = new DOMParser().parseFromString(ep.text, 'text/html');
               const vars = rankSourceCandidates(discoverGeneric(ed, ep.url), undefined)
                 .slice(0, 8).flatMap(c => c.variants).filter(v => !isPreviewUrl(v.url));
+              console.log('[embed] iframe', src, 'vars:', vars.length, vars.map(v => v.url));
               if (vars.length) return vars.map(v => ({ ...v, portable: true as const }));
             } catch (e) {
               if (e instanceof PermissionNeeded) throw e;
@@ -354,7 +370,7 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
     if (rutube) {
       const origins = ['https://*.rutube.ru/*', 'https://*.rtbcdn.ru/*'];
       const missing: string[] = [];
-      for (const origin of origins) if (!await browser.permissions.contains({origins:[origin]})) missing.push(origin);
+      for (const origin of origins) if (!await hasOriginAccess(origin)) missing.push(origin);
       if (missing.length) throw new PermissionNeeded(missing);
       const response = await fetchText(rutube, budget);
       const streams = rutubeStreams(response.text);
@@ -363,7 +379,7 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
     const ok = okPageUrl(input.sourceUrl);
     if (ok) {
       const missing: string[] = [];
-      for (const origin of ['https://ok.ru/*', 'https://*.okcdn.ru/*']) if (!await browser.permissions.contains({origins:[origin]})) missing.push(origin);
+      for (const origin of ['https://ok.ru/*', 'https://*.okcdn.ru/*']) if (!await hasOriginAccess(origin)) missing.push(origin);
       if (missing.length) throw new PermissionNeeded(missing);
       const page = await fetchText(ok, budget, 6 * 1024 * 1024);
       const data = okStreams(page.text, ok);
@@ -373,7 +389,7 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
     if (dzen) {
       const missing: string[] = [];
       for (const origin of ['https://dzen.ru/*', 'https://*.okcdn.ru/*']) {
-        if (!await browser.permissions.contains({origins:[origin]})) missing.push(origin);
+        if (!await hasOriginAccess(origin)) missing.push(origin);
       }
       if (missing.length) throw new PermissionNeeded(missing);
       let data;
@@ -391,7 +407,7 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
     if (direct && !isPreviewUrl(input.sourceUrl)) return existing.length ? attempts[0] : resolveStreams({ ...input, variants: [{ url: input.sourceUrl, format: direct }] }, budget);
     if (sourceIdentity(input.sourceUrl)) {
       const missing: string[] = [];
-      for (const origin of captureOrigins(input.sourceUrl)) if (!await browser.permissions.contains({origins:[origin]})) missing.push(origin);
+      for (const origin of captureOrigins(input.sourceUrl)) if (!await hasOriginAccess(origin)) missing.push(origin);
       if (missing.length) throw new PermissionNeeded(missing);
     }
     if (vkIdentity(input.sourceUrl)) {
@@ -552,7 +568,7 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
           const redirectUrl = await discoverTabRedirect(input.sourceUrl);
           const redirectOrigin = originPattern(redirectUrl);
           if (!error.origins.includes(redirectOrigin) &&
-              !await browser.permissions.contains({ origins: [redirectOrigin] })) {
+              !await hasOriginAccess(redirectOrigin)) {
             extraOrigins.push(redirectOrigin);
             const addr = new URL(redirectUrl);
             if (addr.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(addr.hostname))
@@ -660,17 +676,33 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       const yandexFallbacks = (input.variants ?? [])
         .filter(v => v.format === 'file' && !mediaFormat(v.url) && isYandexVideo(v.url))
         .map(v => v.url);
+      console.log('[yandex-fallback] trigger reason:', reason.slice(0, 80), 'fallbacks:', yandexFallbacks.length, 'input.variants:', input.variants?.length);
       if (yandexFallbacks.length) {
         const allOriginsY = () => [...new Set(attempts.flatMap(a => a.requiredOrigins ?? []))];
         for (const fallbackUrl of yandexFallbacks) {
           try {
+            console.log('[yandex-fallback] readEmbedPlayer:', fallbackUrl);
             const vars = await readEmbedPlayer(fallbackUrl, budget);
+            console.log('[yandex-fallback] readEmbedPlayer returned', vars.length, 'vars:', vars.map(v => v.url));
             if (vars.length) {
               const r = await resolveStreams({ ...input, variants: vars }, budget);
+              console.log('[yandex-fallback] resolveStreams status:', r.status);
               if (r.status === 'ready') return r;
+              // CDN signed URLs can expire before verification completes.
+              // If we have HLS/DASH manifests and resolveStreams failed (not permissions),
+              // trust them anyway — the player will get a fresh token on re-check.
+              const manifests = vars.filter(v => v.format === 'hls' || v.format === 'dash');
+              if (manifests.length && !(r.requiredOrigins ?? []).length) {
+                console.log('[yandex-fallback] accepting manifests without verification (CDN may have expired)');
+                return { status: 'ready', variants: manifests,
+                  duration: input.duration ?? input.expectedDuration, title: input.title,
+                  reason: 'Найдено через Яндекс Видео. CDN-ссылки могут истечь — нажмите «Проверить снова» при ошибке воспроизведения.',
+                  requiredOrigins: [] };
+              }
               attempts.push(r);
             }
           } catch (tabErr) {
+            console.log('[yandex-fallback] error:', tabErr instanceof Error ? tabErr.message : tabErr);
             if (tabErr instanceof PermissionNeeded)
               return { status: 'site', reason: tabErr.message, requiredOrigins: [...new Set([...allOriginsY(), ...tabErr.origins])] };
           }
@@ -710,7 +742,7 @@ async function resolveStreams(input: Video, budget: AbortSignal): Promise<Partia
           }
           if (isShortPreview(duration, input.expectedDuration)) throw new Error('Найден поток превью вместо полного видео');
           const deps = [...new Set([...info.dependencies, ...info.resourceUrls].map(originPattern))];
-          for (const origin of deps) if (!await browser.permissions.contains({ origins: [origin] })) missing.add(origin);
+          for (const origin of deps) if (!await hasOriginAccess(origin)) missing.add(origin);
           let portable = missing.size === 0 && info.dependencies.length <= 32 && info.resourceUrls.length > 0;
           if (portable) {
             // Check a representative resource per host anonymously; never download entire segments here.
