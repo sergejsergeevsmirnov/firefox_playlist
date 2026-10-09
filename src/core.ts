@@ -1,5 +1,6 @@
 import { emptyState, defaultFilters, variantKey, type Candidate, type State, type Video, type Variant, type Filters } from './model';
 import { isPreviewUrl, isShortPreview } from './media-policy';
+import { isYandexVideo } from './discovery';
 
 export function httpUrl(value: string | null | undefined, base?: string): string | undefined {
   if (!value) return;
@@ -84,7 +85,7 @@ export function restoreState(raw: unknown): State {
   const saved = raw as State;
   for (const [id, value] of Object.entries(saved.videos ?? {})) {
     if (!value || !httpUrl(value.sourceUrl) || !Array.isArray(value.variants)) continue;
-    const variants = value.variants.filter(v => httpUrl(v.url) && ['file', 'hls', 'dash', 'youtube', 'native'].includes(v.format) && !isPreviewUrl(v.url));
+    const variants = value.variants.filter(v => httpUrl(v.url) && ['file', 'hls', 'dash', 'youtube', 'native'].includes(v.format) && (!isPreviewUrl(v.url) || isYandexVideo(v.url)));
     if (value.variants.length && !variants.length) continue;
     if (isShortPreview(value.duration, value.expectedDuration)) continue;
     state.videos[id] = {

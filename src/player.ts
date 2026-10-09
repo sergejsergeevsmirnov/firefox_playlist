@@ -1,9 +1,43 @@
 import './style.css';
-import Hls from 'hls.js';
+import Hls, { type Loader, type LoaderContext, type LoaderStats, type LoaderConfiguration, type LoaderCallbacks } from 'hls.js';
 import { MediaPlayer, type MediaPlayerClass } from 'dashjs';
 import { formatTime } from './core';
 import { emptyState, variantKey, type Video, type Variant } from './model';
 import { $, element, button, getState, send, notify, notifyError, link } from './ui';
+
+// Proxies phncdn.com (PornHub CDN) requests through the background page.
+// Extension pages cannot set cross-origin Referer; background fetch() can.
+class PhncdnLoader {
+  stats = {
+    aborted: false, loaded: 0, retry: 0, total: 0, chunkCount: 0, bwEstimate: 0,
+    loading: { start: 0, first: 0, end: 0 }, parsing: { start: 0, end: 0 }, buffering: { start: 0, first: 0, end: 0 },
+  } as LoaderStats;
+  private aborted = false;
+  private tmr: ReturnType<typeof setTimeout> | undefined;
+
+  load(context: LoaderContext, config: LoaderConfiguration, callbacks: LoaderCallbacks<LoaderContext>): void {
+    this.stats.loading.start = performance.now();
+    if (config.timeout) this.tmr = setTimeout(() => {
+      this.aborted = true; callbacks.onTimeout(this.stats, context, null!);
+    }, config.timeout);
+    void browser.runtime.sendMessage({ type: 'cdnFetch', url: context.url }).then((res: {
+      kind: string; text?: string; buffer?: ArrayBuffer; url: string;
+    }) => {
+      if (this.aborted) return;
+      clearTimeout(this.tmr);
+      this.stats.loading.first = this.stats.loading.end = performance.now();
+      const data: string | ArrayBuffer = res.kind === 'text' ? res.text! : res.buffer!;
+      this.stats.loaded = this.stats.total = typeof data === 'string' ? data.length : data.byteLength;
+      callbacks.onSuccess({ data, url: res.url }, this.stats, context, null!);
+    }).catch((err: Error) => {
+      if (this.aborted) return;
+      clearTimeout(this.tmr);
+      callbacks.onError({ code: 0, text: String(err) }, context, null!, null!);
+    });
+  }
+  abort(): void { this.aborted = true; this.stats.aborted = true; clearTimeout(this.tmr); }
+  destroy(): void { this.abort(); }
+}
 
 document.body.classList.add('player-page');
 $('#app').innerHTML = `
@@ -163,15 +197,10 @@ async function load(id: string, autoplay: boolean, resume?: number): Promise<voi
   metadataTimeout = setTimeout(() => { void fail('Источник не ответил за 25 секунд', generation); }, 25000);
   video.onerror = () => { void fail(`Ошибка загрузки видео (code ${video.error?.code ?? '?'}${video.error?.message ? ': ' + video.error.message : ''})`, generation); };
   if (currentVariant.format === 'hls' && Hls.isSupported()) {
+    const usePhncdnProxy = (() => { try { return /(^|\.)phncdn\.com$/.test(new URL(currentVariant.url).hostname); } catch { return false; } })();
     hls = new Hls({
       enableWorker: false, autoStartLoad: true,
-      fetchSetup: (context, initParams) => {
-        try {
-          if (/(^|\.)phncdn\.com$/.test(new URL(context.url).hostname))
-            return new Request(context.url, { ...initParams, referrer: 'https://www.pornhub.com/' });
-        } catch {}
-        return new Request(context.url, initParams);
-      },
+      ...(usePhncdnProxy ? { loader: PhncdnLoader as unknown as typeof Hls.DefaultConfig.loader } : {}),
     });
     const instance = hls;
     instance.on(Hls.Events.MANIFEST_PARSED, () => {

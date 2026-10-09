@@ -19,6 +19,28 @@ const scheduled = new Set<string>();
 const activeDownloads = new Map<string, Promise<{ url: string }>>();
 const requestSessions = new Map<string, { tab: number; token: string }>();
 const extensionRoot = browser.runtime.getURL('');
+// Auto-retry: 30 s → 2 min → 5 min, then give up.
+const autoRetryDelays = [30_000, 120_000, 300_000];
+const autoRetryState = new Map<string, { count: number }>();
+function scheduleAutoRetry(id: string): void {
+  const entry = autoRetryState.get(id) ?? { count: 0 };
+  if (entry.count >= 3) {
+    autoRetryState.delete(id);
+    void mutate(() => { if (state.videos[id]) state.videos[id].reason = (state.videos[id].reason ?? '') + ' (3 авто-проверки не прошли)'; });
+    return;
+  }
+  const delay = autoRetryDelays[entry.count];
+  autoRetryState.set(id, { count: entry.count + 1 });
+  const attempt = entry.count + 1;
+  const label = delay >= 60_000 ? `${Math.round(delay / 60_000)} мин` : `${delay / 1_000} с`;
+  void mutate(() => { if (state.videos[id]) state.videos[id].reason = (state.videos[id].reason ?? '') + ` (попытка ${attempt}/3, повтор через ${label})`; });
+  setTimeout(() => {
+    const v = state.videos[id];
+    if (!v || v.status === 'ready' || v.status === 'checking') return;
+    void mutate(() => { if (state.videos[id]) { state.videos[id].status = 'checking'; state.videos[id].reason = undefined; } });
+    schedule(id);
+  }, delay);
+}
 let writeChain: Promise<unknown> = Promise.resolve();
 // Cache broad access flag — set on startup and after permissionsChanged.
 let _broadAccess = false;
@@ -123,6 +145,12 @@ function schedule(id: string, tab?: number, token?: string, allowBrowser = false
         const suppressed = Object.values(sessions).flatMap(s => s.suppressed);
         enqueue(state, state.videos[id], suppressed);
       });
+      // Auto-retry on transient failures (not permission errors).
+      if (result.status === 'ready') {
+        autoRetryState.delete(id);
+      } else if (!result.requiredOrigins?.length) {
+        scheduleAutoRetry(id);
+      }
       // Kick off the YouTube download in the background without blocking the
       // next check in the queue.
       const nativeVariant = result.variants?.find(v => v.format === 'native');
@@ -322,6 +350,7 @@ async function handleUI(message: { type: string; [key: string]: any }): Promise<
     }); return { ok: true };
     case 'retry': {
       const video = state.videos[message.id]; if (!video) return { ok: false };
+      autoRetryState.delete(message.id); // Reset auto-retry count on manual retry.
       await mutate(() => { video.status = 'checking'; video.reason = undefined; video.requiredOrigins = [];
         if (message.refresh) video.variants = [];
       });
@@ -359,6 +388,18 @@ async function handleUI(message: { type: string; [key: string]: any }): Promise<
     case 'nativeStatus': try { return { ok: true, ...(await nativeStatus()) }; } catch (error) { return { ok: true, available: false, error: error instanceof Error ? error.message : String(error) }; }
     case 'proxyGet': try { return { ok: true, proxy: await nativeGetProxy() }; } catch (error) { return { ok: true, proxy: '', error: error instanceof Error ? error.message : String(error) }; }
     case 'proxySet': try { await nativeSetProxy(String(message.proxy ?? '')); return { ok: true }; } catch (error) { throw new Error(error instanceof Error ? error.message : String(error)); }
+    case 'cdnFetch': {
+      const cdnUrl = String(message.url ?? '');
+      if (!httpUrl(cdnUrl)) throw new Error('Неверный URL для CDN прокси');
+      const cdnResp = await fetch(cdnUrl, { credentials: 'omit', referrer: 'https://www.pornhub.com/' });
+      if (!cdnResp.ok && cdnResp.status !== 206) throw new Error(`HTTP ${cdnResp.status}`);
+      const cdnCt = cdnResp.headers.get('content-type') ?? '';
+      const cdnFinalUrl = cdnResp.url;
+      if (cdnCt.includes('mpegurl') || cdnCt.includes('text') || /\.m3u8(\?|$)/i.test(cdnUrl)) {
+        return { ok: true, kind: 'text', text: await cdnResp.text(), url: cdnFinalUrl, status: cdnResp.status };
+      }
+      return { ok: true, kind: 'buffer', buffer: await cdnResp.arrayBuffer(), url: cdnFinalUrl, status: cdnResp.status };
+    }
     default: throw new Error('Неизвестная команда');
   }
 }
@@ -403,3 +444,31 @@ browser.webRequest.onHeadersReceived.addListener(details => {
     if (id && state.videos[id].status === 'checking') schedule(id, details.tabId, session.token);
   })().catch(console.error);
 }, { urls: ['http://*/*', 'https://*/*'] }, ['responseHeaders']);
+
+// phncdn.com (PornHub CDN) requires Referer: pornhub.com and drops connections from
+// non-pornhub origins (e.g. moz-extension://). We fix both at the webRequest layer:
+// onBeforeSendHeaders — strip Origin (prevents CDN from seeing moz-extension:// origin)
+//                       and set Referer: pornhub.com.
+// onHeadersReceived  — inject Access-Control-Allow-Origin: * so extension-page CORS passes.
+browser.webRequest.onBeforeSendHeaders.addListener(
+  (details) => {
+    const headers = (details.requestHeaders ?? []).filter(h => {
+      const n = h.name.toLowerCase(); return n !== 'referer' && n !== 'origin';
+    });
+    headers.push({ name: 'Referer', value: 'https://www.pornhub.com/' });
+    return { requestHeaders: headers };
+  },
+  { urls: ['https://*.phncdn.com/*', 'http://*.phncdn.com/*'] },
+  ['blocking', 'requestHeaders']
+);
+browser.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    const headers = (details.responseHeaders ?? []).filter(
+      h => h.name.toLowerCase() !== 'access-control-allow-origin'
+    );
+    headers.push({ name: 'Access-Control-Allow-Origin', value: '*' });
+    return { responseHeaders: headers };
+  },
+  { urls: ['https://*.phncdn.com/*', 'http://*.phncdn.com/*'] },
+  ['blocking', 'responseHeaders']
+);
