@@ -1,7 +1,7 @@
 import './style.css';
 import Hls, { type Loader, type LoaderContext, type LoaderStats, type LoaderConfiguration, type LoaderCallbacks } from 'hls.js';
 import { MediaPlayer, type MediaPlayerClass } from 'dashjs';
-import { formatTime } from './core';
+import { dedupeQueue, formatTime } from './core';
 import { emptyState, variantKey, type Video, type Variant } from './model';
 import { $, element, button, getState, send, notify, notifyError, link } from './ui';
 
@@ -74,20 +74,24 @@ function logLine(text: string): void {
   el.scrollTop = el.scrollHeight;
 }
 
+function effectiveQueue(): string[] {
+  return state.dedupe ? dedupeQueue(state.queue, state.videos) : state.queue;
+}
 async function refresh(): Promise<void> {
   const data = await getState(); state = data.state;
   $<HTMLInputElement>('#repeat').checked = state.repeat;
   $<HTMLInputElement>('#shuffle').checked = state.shuffle;
   $<HTMLInputElement>('#autoplay').checked = state.autoplay;
-  $('#count').textContent = String(state.queue.length);
+  const eq = effectiveQueue();
+  $('#count').textContent = String(eq.length);
   const list = $('#playlist'); list.replaceChildren();
-  for (const id of state.queue) {
+  for (const id of eq) {
     const v = state.videos[id];
     const item = button(v.title, () => load(id, true), `playlist-item${id === currentId ? ' active' : ''}`);
     item.append(element('small', `${formatTime(v.duration)} · ${new URL(v.sourceUrl).hostname}${v.watched ? ' · Просмотрено' : ''}`));
     list.append(item);
   }
-  if (!state.queue.length) list.append(element('p', 'Пока пусто. Включите сбор в боковой панели.', 'empty'));
+  if (!eq.length) list.append(element('p', 'Пока пусто. Включите сбор в боковой панели.', 'empty'));
 }
 function showEmbed(url: string): void {
   const container = $('#embed'); container.replaceChildren();
@@ -259,7 +263,7 @@ async function fail(reason: string, generation: number): Promise<void> {
   else $('#playback-status').textContent = `${reason}. Автопереход выключен — следующий ролик не запущен.`;
 }
 async function advance(): Promise<void> {
-  const available = state.queue.filter(id => !failed.has(id));
+  const available = effectiveQueue().filter(id => !failed.has(id));
   if (!available.length) { cleanup(); $('#playback-status').textContent = 'Доступных видео больше нет.'; return; }
   if (currentId) history.push(currentId);
   let next: string | undefined;
@@ -268,8 +272,9 @@ async function advance(): Promise<void> {
     if (!shuffledRemaining.length && (!history.length || state.repeat || history.length === 1)) shuffledRemaining = available.filter(id => id !== currentId || available.length === 1);
     const index = Math.floor(Math.random() * shuffledRemaining.length); next = shuffledRemaining.splice(index, 1)[0];
   } else {
-    const index = currentId ? state.queue.indexOf(currentId) : -1;
-    next = state.queue.slice(index + 1).find(id => !failed.has(id));
+    const eq = effectiveQueue();
+    const index = currentId ? eq.indexOf(currentId) : -1;
+    next = eq.slice(index + 1).find(id => !failed.has(id));
     if (!next && state.repeat) next = available[0];
   }
   if (next) await load(next, true);
@@ -281,12 +286,13 @@ $('#test-link').onclick = () => {
 };
 $('#play').onclick = () => {
   started = true;
-  if (!currentId) { if (state.queue[0]) void load(state.queue[0], true).catch(notifyError); }
+  if (!currentId) { const eq = effectiveQueue(); if (eq[0]) void load(eq[0], true).catch(notifyError); }
   else if (video.paused) void video.play().catch(notifyError); else video.pause();
 };
 $('#next').onclick = () => { void advance().catch(notifyError); };
 $('#previous').onclick = () => {
-  const previous = history.pop() ?? state.queue[Math.max(0, state.queue.indexOf(currentId || '') - 1)];
+  const eq = effectiveQueue();
+  const previous = history.pop() ?? eq[Math.max(0, eq.indexOf(currentId || '') - 1)];
   if (previous) void load(previous, true).catch(notifyError);
 };
 $('#quality').onchange = () => {

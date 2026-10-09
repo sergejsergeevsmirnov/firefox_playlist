@@ -377,6 +377,7 @@ async function handleUI(message: { type: string; [key: string]: any }): Promise<
       state.repeat = message.repeat === true; state.shuffle = message.shuffle === true;
       if (typeof message.autoplay === 'boolean') state.autoplay = message.autoplay;
     }); return { ok: true };
+    case 'setDedupe': await mutate(() => { state.dedupe = !!message.dedupe; }); return { ok: true };
     case 'selectVariant': await mutate(() => {
       const v = state.videos[message.id]; if (v?.variants.some(x => variantKey(x) === message.key)) v.selectedVariant = message.key;
     }); return { ok: true };

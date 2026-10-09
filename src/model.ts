@@ -52,6 +52,7 @@ export interface State {
   repeat: boolean;
   shuffle: boolean;
   autoplay: boolean;
+  dedupe: boolean;
   dismissed?: string[];
 }
 export interface Session {
@@ -66,5 +67,5 @@ export interface Session {
   previewUrls?: string[];
 }
 export const defaultFilters: Filters = { host: '', include: '', exclude: '', format: '', live: '', watched: '' };
-export const emptyState = (): State => ({ version: 1, videos: {}, queue: [], filters: { ...defaultFilters }, repeat: false, shuffle: false, autoplay: true });
+export const emptyState = (): State => ({ version: 1, videos: {}, queue: [], filters: { ...defaultFilters }, repeat: false, shuffle: false, autoplay: true, dedupe: false });
 export const variantKey = (v: Variant) => `${v.url}|${v.qualityIndex ?? ''}|${v.height ?? ''}`;

@@ -1,6 +1,6 @@
 import './style.css';
 import './compact.css';
-import { exportPlaylist, formatTime, matches, httpUrl } from './core';
+import { dedupeQueue, exportPlaylist, formatTime, matches, httpUrl } from './core';
 import { defaultFilters, emptyState, type Filters, type Session, type Video } from './model';
 import { $, element, button, link, getState, send, notify, notifyError } from './ui';
 import { quickFilters, qualityPresets, durationPresets, encodeFilter, decodeFilter } from './quick-filters';
@@ -28,6 +28,7 @@ $('#app').innerHTML = `
       </form>
     </section>
     <section><div class="list-toolbar"><div role="tablist" aria-label="Список видео"><button id="queue-tab" role="tab" aria-selected="true">Очередь <span id="queue-count" class="count">0</span></button><button id="found-tab" role="tab" aria-selected="false">Найдено <span id="found-count" class="count">0</span></button></div><button id="open-player" class="primary">▶ Плеер</button></div>
+      <label class="hint dedupe-opt" title="Показывать только лучшее видео из дублей с одинаковым названием"><input id="dedupe" type="checkbox"> Без дублей</label>
       <div id="queue" class="cards" role="tabpanel" aria-labelledby="queue-tab"></div><div id="found" class="cards" role="tabpanel" aria-labelledby="found-tab" hidden></div></section>
   </main><footer><p id="notice" role="status" aria-live="polite">Всё хранится в этом браузере. <span class="muted" id="version"></span></p></footer>`;
 
@@ -184,8 +185,11 @@ function render(): void {
   } else if (!broadAccess && session?.frameOrigins.length) {
     frameAccess.append(button('Разрешить встроенные плееры', () => grant(session.frameOrigins), 'text-button'));
   }
-  $('#queue-count').textContent = String(state.queue.length);
-  $('#queue').replaceChildren(...state.queue.map((id, i) => card(state.videos[id], true, i)));
+  $<HTMLInputElement>('#dedupe').checked = !!state.dedupe;
+  const displayQueue = state.dedupe ? dedupeQueue(state.queue, state.videos) : state.queue;
+  $('#queue-count').textContent = state.dedupe && displayQueue.length < state.queue.length
+    ? `${displayQueue.length}/${state.queue.length}` : String(state.queue.length);
+  $('#queue').replaceChildren(...displayQueue.map(id => card(state.videos[id], true, state.queue.indexOf(id))));
   if (!state.queue.length) $('#queue').append(element('p', 'Здесь появятся видео, прошедшие проверку и фильтры.', 'empty'));
   const others = Object.values(state.videos).filter(v => !state.queue.includes(v.id)).sort((a, b) => b.addedAt - a.addedAt);
   $('#found-count').textContent = String(others.length); $('#found').replaceChildren(...others.map(v => card(v, false)));
@@ -276,6 +280,10 @@ async function saveProxy(): Promise<void> {
 }
 $('#proxy-save').onclick = () => { void saveProxy().catch(notifyError); };
 proxyInput.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); void saveProxy().catch(notifyError); } };
+
+$<HTMLInputElement>('#dedupe').onchange = () => {
+  void send('setDedupe', { dedupe: $<HTMLInputElement>('#dedupe').checked }).then(refresh).catch(notifyError);
+};
 
 const toolbarEl = document.querySelector<HTMLElement>('.compact-toolbar')!;
 const updateToolbarHeight = () => document.documentElement.style.setProperty('--toolbar-height', `${toolbarEl.offsetHeight}px`);

@@ -74,6 +74,23 @@ export function matches(v: Video, f: Filters): Match {
   if (v.status !== 'ready' || duration === 'pending' || (f.live && v.live === undefined) || !qualities.includes('match')) return 'pending';
   return 'match';
 }
+export function dedupeQueue(queue: string[], videos: Record<string, Video>): string[] {
+  const byTitle = new Map<string, string[]>();
+  for (const id of queue) {
+    const v = videos[id]; if (!v) continue;
+    const key = v.title.trim().toLowerCase();
+    const group = byTitle.get(key) ?? []; group.push(id); byTitle.set(key, group);
+  }
+  const score = (id: string) => {
+    const v = videos[id]; if (!v) return -1;
+    return (v.status === 'ready' ? 100000 : 0) + (v.variants.length ? Math.max(...v.variants.map(x => x.height ?? 0)) : 0);
+  };
+  const keep = new Set<string>();
+  for (const ids of byTitle.values()) {
+    keep.add(ids.length === 1 ? ids[0] : ids.reduce((a, b) => score(a) >= score(b) ? a : b));
+  }
+  return queue.filter(id => keep.has(id));
+}
 export function enqueue(state: State, video: Video, suppressed: string[] = []): void {
   if (state.queue.includes(video.id) || suppressed.includes(video.id) || state.dismissed?.includes(video.id) || matches(video, state.filters) !== 'match') return;
   video.selectedVariant = variantKey(bestVariant(video, state.filters)!);
@@ -100,6 +117,7 @@ export function restoreState(raw: unknown): State {
   state.repeat = saved.repeat === true;
   state.shuffle = saved.shuffle === true;
   state.autoplay = saved.autoplay !== false;
+  state.dedupe = saved.dedupe === true;
   state.dismissed = Array.isArray(saved.dismissed) ? saved.dismissed.filter(id => typeof id === 'string') : [];
   return state;
 }
