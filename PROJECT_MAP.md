@@ -135,7 +135,9 @@ resolver.ts → resolveVideo()
   └─ resolveStreams() → probeFile() / parseHls() / parseDash()
        ↓
 background.ts → mutate() → state.videos[id] обновляется
-  └─ enqueue() → state.queue.push(id) если matches() === 'match'
+  ├─ enqueue() → state.queue.push(id) если matches() === 'match'
+  └─ scheduleAutoRetry(id) если status≠ready && requiredOrigins==[]
+       → setTimeout(30s/2min/5min) → schedule(id) повторно (до 3 попыток)
        ↓
 sidebar.ts ← getState() (polling при каждом refresh)
 player.ts  ← getState() (при старте и после действий)
@@ -178,6 +180,8 @@ Video {
 - `native` — ожидает замены на `file` после скачивания
 
 Fallback: при ошибке воспроизведения — retry через `resolver.ts`, затем переход к следующему.
+
+**phncdn.com**: для HLS-потоков с `*.phncdn.com` используется `PhncdnLoader` — кастомный hls.js-загрузчик, который проксирует все запросы сегментов через `browser.runtime.sendMessage({type:'cdnFetch'})`, чтобы background-страница добавила корректный `Referer: https://www.pornhub.com/`.
 
 ### Layout страницы плеера (после скролла за шапку)
 

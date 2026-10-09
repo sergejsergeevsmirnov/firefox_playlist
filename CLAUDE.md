@@ -50,6 +50,22 @@ pnpm run package    # zip → artifacts/
 - **`src/task-pool.ts`** — `TaskPool(concurrency)`: очередь async-задач с ограничением параллелизма
 - **`src/native.ts`** — HTTP-клиент yt-dlp моста: `nativePing()`, `nativeStatus()`, `nativeDownload()`, `nativeCleanup()`, `nativeGetProxy()`, `nativeSetProxy()`
 - **`src/ui.ts`** — DOM-хелперы `$`, `element`, `button`, `send`, `notify`
+
+### phncdn.com (PornHub CDN)
+
+`moz-extension://` origin не может выставить cross-origin `Referer`, поэтому phncdn.com режет соединения из страницы плеера. Решение — три слоя:
+
+1. **`webRequest.onBeforeSendHeaders`** в `background.ts` подставляет `Referer: https://www.pornhub.com/` для всех запросов к `*.phncdn.com` (нужно разрешение `webRequestBlocking` в манифесте).
+2. **`webRequest.onHeadersReceived`** добавляет `Access-Control-Allow-Origin: *` в ответы phncdn.com.
+3. **`PhncdnLoader`** в `player.ts` — кастомный hls.js-загрузчик: перехватывает все запросы сегментов HLS и проксирует их через `browser.runtime.sendMessage({ type: 'cdnFetch', url })` → background-страница делает `fetch()` с нужным `referrer` и возвращает бинарный буфер или текст плейлиста.
+
+`background.ts` обрабатывает `cdnFetch`-сообщения: загружает URL с `referrer: 'https://www.pornhub.com/'`, возвращает `{ kind: 'text'|'buffer', text|buffer, url, status }`.
+
+### Авто-повтор проверки
+
+`autoRetryDelays = [30_000, 120_000, 300_000]` (30 с / 2 мин / 5 мин).  
+`autoRetryState: Map<id, { count }>` — transient, не персистируется.  
+`scheduleAutoRetry(id)` вызывается в `background.ts` после неудачной проверки (status ≠ 'ready', requiredOrigins пусты). После 3 попыток добавляет `(3 авто-проверки не прошли)` к `reason`. Ручной повтор (`retry`-сообщение) сбрасывает счётчик через `autoRetryState.delete(id)`.
 - **`src/quick-filters.ts`** — пресеты качества/длительности (`qualityPresets`, `durationPresets`), `quickFilters()` (нормализует `minHeight`, `maxDuration`, `minDuration`), encode/decode фильтров в JSON; поддерживает направление `lt`/`gt` через поле `durationDir`
 - **`src/style.css`** — общие стили + layout плеера (см. «UI / Скролл-поведение»)
 - **`src/compact.css`** — компактные стили боковой панели + sticky-механика вкладок
@@ -145,6 +161,9 @@ Invoke-WebRequest http://127.0.0.1:8765/status
 - **YouTube**: если мост жив (`nativePing()`), сразу возвращает `native`-вариант; ensureDownload скачивает в фоне и заменяет вариант на `file`.
 - Формат `youtube` используется только для embed-iframe (плеер не умеет его скачивать).
 - `portable: true` на варианте = URL доступен для VLC-экспорта.
+- **phncdn.com (PornHub CDN)**: `ipa=1` = IP-anchored URL; `validfrom`/`validto` = 2-часовой окно; `moz-extension://` origin режется CDN → три слоя исправления (webRequest + PhncdnLoader + cdnFetch). `PhncdnLoader` активируется автоматически когда `currentVariant.url` hostname совпадает с `*.phncdn.com`.
+- **Яндекс preview URL в restoreState** (`core.ts`): `isPreviewUrl('yandex.ru/video/preview/...')` возвращало `true` (путь содержит `/preview/`) — URL исчезал после перезапуска расширения. Исправление: добавлен `|| isYandexVideo(v.url)` в фильтр вариантов в `restoreState`. Циклическая зависимость `core.ts ↔ discovery.ts` допустима (используется только внутри тела функции, Vite обрабатывает корректно).
+- **Last-resort: открытие страницы-источника** (`resolver.ts`): условие `!embeds.length && !embedsMissingBefore.length` заменено на `!embedsMissingBefore.length && !embeds.includes(fetchUrl)`. Теперь `readEmbedPlayer(fetchUrl)` вызывается даже если на странице есть embed-iframe (рекламные виджеты), но они не дали результата. Это позволяет авто-повтору получить свежий CDN-URL при повторном открытии страницы-источника в фоновой вкладке.
 - **clearQueue**: вызывает `endSession` для всех сессий — сбор полностью останавливается. После очистки пользователь нажимает «Собирать» вручную. При повторном старте (`start`) фоновый скрипт после `inject` отправляет `scanNow` через `browser.tabs.sendMessage`: если `executeScript` попал в гонку при остановке старого экземпляра, уцелевший контент-скрипт всё равно немедленно начнёт сканирование с новым токеном.
 - **Нормализация ссылок с Яндекс Видео** (`discovery.ts` + `resolver.ts`): `externalUrl()` применяет `stripMobileSubdomain()` как к прямым URL, так и к URL, извлечённым из query-параметра `url=` (Яндекс редиректы вида `clck/jsredir?...&url=http%3A%2F%2Fm.site.ru%2F...`). На Яндекс Видео страницах `discoverGeneric()` не обрабатывает `og:video` мета-теги — иначе они создавали бы кандидата с `sourceUrl = yandex.ru/video/preview/...`; внешний URL извлекает `discoverYandex()`. `fetchText()` с флагом `detectRedirects = true` делает HEAD pre-flight для кросс-доменных редиректов и объединяет все разрешения в один диалог. `PermissionNeeded` несёт опциональный `canonicalUrl` для обновления `sourceUrl`. `probeFile()` проверяет `Content-Type` ответа и отклоняет `text/html` — HTML-страницы плееров (например, `pbembed.me/embed/...` с ложным `og:video:type: video/mp4`) больше не принимаются как видеофайлы. `og:video` URL без расширения медиафайла добавляются в список embed-страниц для обхода в `resolveVideo()`.
 - **Сайты, блокирующие headless-запросы (`porno-bomba.net` и зеркала)**: если `fetchText` бросает NetworkError, в `resolveVideo()` сначала перебираются embed-URL из `input.variants` (format=`file`, без расширения медиафайла — например `pbembed.me/embed/XXXXX/`): сначала статический `fetchText` + `discoverGeneric`, затем `readEmbedPlayer` с фоновой вкладкой. Embed-URL открывается напрямую (не через страницу-источник), поэтому `<video>` оказывается в главном фрейме без cross-origin iframe. Только если все embed-варианты не дали результата — открывается страница-источник.

@@ -37,14 +37,20 @@ firefox_videoplaylist/
 │   │
 │   ├── resolver.ts                resolveVideo() — центральный диспетчер
 │   │                               Выбирает провайдер → resolveStreams() → probeFile()
+│   │                               readEmbedPlayer: фоновая вкладка; last-resort для всех
+│   │                               сайтов (включая те, где embed-iframe не дали результата)
 │   ├── background.ts              Service worker: state, sessions, TaskPool
-│   │                               onMessage, webRequest listener, schedule()
+│   │                               onMessage, schedule(), scheduleAutoRetry()
+│   │                               cdnFetch: прокси CDN-запросов для phncdn.com
+│   │                               webRequest.onBeforeSendHeaders: Referer для *.phncdn.com
+│   │                               webRequest.onHeadersReceived: ACAO:* для *.phncdn.com
 │   ├── content.ts                 Content script: scan(), MutationObserver
 │   │                               Инжектируется на все разрешённые страницы
 │   │                               Обработчик scanNow: немедленный перезапуск скана
 │   │
 │   ├── sidebar.ts                 Боковая панель: карточки, фильтры, экспорт
 │   ├── player.ts                  Плеер: hls.js, dash.js, <video>, <iframe>
+│   │                               PhncdnLoader: кастомный hls.js-загрузчик для phncdn.com
 │   │
 │   ├── pot.ts                     Вспомогательный скрипт PoToken (web_accessible)
 │   ├── style.css                  Основные стили + sticky-layout плеера:
