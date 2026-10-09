@@ -123,12 +123,10 @@ export async function probeFile(variant: Variant): Promise<{ variant: Variant; d
 }
 let embedTabBusy = false;
 async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<Variant[]> {
-  console.log('[embed] readEmbedPlayer start:', embedUrl, 'busy:', embedTabBusy);
   if (embedTabBusy) return [];
   embedTabBusy = true;
   try {
     const tab = await browser.tabs.create({ url: embedUrl, active: false });
-    console.log('[embed] tab created id:', tab.id, 'url:', tab.url);
     if (tab.id === undefined) return [];
     try {
       await browser.tabs.update(tab.id, { muted: true });
@@ -142,7 +140,7 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
         // happens AFTER the initial page reaches 'complete', so we must keep polling the URL.
         const current = await browser.tabs.get(tab.id);
         if (current.url && current.url !== 'about:blank') finalUrl = current.url;
-        if (!complete && current.status === 'complete') { complete = true; console.log('[embed] complete, finalUrl:', finalUrl); }
+        if (!complete && current.status === 'complete') { complete = true; }
         if (complete) {
           pollCount++;
           // After a redirect (http → https or JS-driven) the tab URL changes —
@@ -257,10 +255,9 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
                 return urls;
               }) as unknown as () => void
             });
-          } catch (execErr) { console.log('[embed] executeScript error poll', pollCount, ':', execErr instanceof Error ? execErr.message : execErr); }
+          } catch { /* executeScript may fail while tab is still loading */ }
           // Combine results from all frames (main document + iframes)
           const rawUrls = [...new Set((result ?? []).flatMap((r: browser.scripting.InjectionResult) => (r?.result ?? []) as string[]))];
-          console.log('[embed] poll', pollCount, 'frames:', result?.length ?? 0, 'rawUrls:', rawUrls.length, rawUrls.slice(0, 3));
           const foundVars = rawUrls.flatMap((url: string) => {
             if (isPreviewUrl(url)) return [];
             // Skip individual HLS/DASH segment files — only keep manifests and full files.
@@ -268,11 +265,10 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
             const format = mediaFormat(url) ?? ('file' as const);
             return [{ url, format, portable: true as const }];
           });
-          if (foundVars.length) { console.log('[embed] found', foundVars.length, 'vars:', foundVars.map(v => v.url)); return foundVars; }
+          if (foundVars.length) { return foundVars; }
         }
         await new Promise(r => setTimeout(r, 600));
       }
-      console.log('[embed] polling exhausted, polls after complete:', pollCount, 'finalUrl:', finalUrl);
       // Polling exhausted — no video found in any frame.
       // Discover embed <iframe> URLs from the main frame (including data-src and
       // dynamically-set srcs) and try fetching their HTML directly.
@@ -294,7 +290,6 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
             }) as () => void
           });
           const iframeSrcs = (iframeResult[0]?.result ?? []) as string[];
-          console.log('[embed] iframe srcs found:', iframeSrcs);
           for (const src of iframeSrcs) {
             try {
               budget.throwIfAborted();
@@ -302,7 +297,6 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
               const ed = new DOMParser().parseFromString(ep.text, 'text/html');
               const vars = rankSourceCandidates(discoverGeneric(ed, ep.url), undefined)
                 .slice(0, 8).flatMap(c => c.variants).filter(v => !isPreviewUrl(v.url));
-              console.log('[embed] iframe', src, 'vars:', vars.length, vars.map(v => v.url));
               if (vars.length) return vars.map(v => ({ ...v, portable: true as const }));
             } catch (e) {
               if (e instanceof PermissionNeeded) throw e;
@@ -535,7 +529,10 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
     // this discovers redirect destinations (e.g. https://11.porno-bomba.net/) and either finds
     // the video or surfaces the required host permission for that subdomain.
     const embedsMissingBefore = [...new Set(attempts.flatMap(result => result.requiredOrigins ?? []))];
-    if (!embeds.length && !embedsMissingBefore.length) {
+    // Open the source page as last resort even when embed iframes exist but yielded nothing:
+    // embedded iframes may be ads/social widgets unrelated to the video; the actual player
+    // lives in the main frame and needs a fresh background-tab load to get a valid CDN URL.
+    if (!embedsMissingBefore.length && !embeds.includes(fetchUrl)) {
       try {
         const vars = await readEmbedPlayer(fetchUrl, budget);
         if (vars.length) {
@@ -680,17 +677,13 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       const yandexFallbacks = (input.variants ?? [])
         .filter(v => v.format === 'file' && !mediaFormat(v.url) && isYandexVideo(v.url))
         .map(v => v.url);
-      console.log('[yandex-fallback] trigger reason:', reason.slice(0, 80), 'fallbacks:', yandexFallbacks.length, 'input.variants:', input.variants?.length);
       if (yandexFallbacks.length) {
         const allOriginsY = () => [...new Set(attempts.flatMap(a => a.requiredOrigins ?? []))];
         for (const fallbackUrl of yandexFallbacks) {
           try {
-            console.log('[yandex-fallback] readEmbedPlayer:', fallbackUrl);
             const vars = await readEmbedPlayer(fallbackUrl, budget);
-            console.log('[yandex-fallback] readEmbedPlayer returned', vars.length, 'vars:', vars.map(v => v.url));
             if (vars.length) {
               const r = await resolveStreams({ ...input, variants: vars }, budget);
-              console.log('[yandex-fallback] resolveStreams status:', r.status);
               if (r.status === 'ready') {
                 // Re-attach the Yandex preview URL as a variant so it survives
                 // Object.assign in background.ts and stays available for future re-checks.
@@ -701,7 +694,6 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
               attempts.push(r);
             }
           } catch (tabErr) {
-            console.log('[yandex-fallback] error:', tabErr instanceof Error ? tabErr.message : tabErr);
             if (tabErr instanceof PermissionNeeded)
               return { status: 'site', reason: tabErr.message, requiredOrigins: [...new Set([...allOriginsY(), ...tabErr.origins])] };
           }
