@@ -128,6 +128,20 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
   try {
     const tab = await browser.tabs.create({ url: embedUrl, active: false });
     if (tab.id === undefined) return [];
+    // Intercept HLS/DASH manifest requests from the background tab via webRequest.
+    // Needed for CDNs like phncdn.com whose URLs are not exposed via <video>.currentSrc
+    // or window.jwplayer — the player requests them before any script-accessible state
+    // is set, and from a real browser context so the CDN returns HTTP 200.
+    const capturedCdnUrls: string[] = [];
+    const cdnListener = (details: browser.webRequest._OnHeadersReceivedDetails) => {
+      if (details.tabId !== tab.id || details.statusCode >= 400) return;
+      try {
+        const { pathname } = new URL(details.url);
+        if (/\.(m3u8|mpd)(\?|$)/i.test(pathname) && !capturedCdnUrls.includes(details.url))
+          capturedCdnUrls.push(details.url);
+      } catch {}
+    };
+    browser.webRequest.onHeadersReceived.addListener(cdnListener, { urls: ['*://*.phncdn.com/*'] }, ['responseHeaders']);
     try {
       await browser.tabs.update(tab.id, { muted: true });
       const deadline = Date.now() + 20000;
@@ -258,7 +272,9 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
           } catch { /* executeScript may fail while tab is still loading */ }
           // Combine results from all frames (main document + iframes)
           const rawUrls = [...new Set((result ?? []).flatMap((r: browser.scripting.InjectionResult) => (r?.result ?? []) as string[]))];
-          const foundVars = rawUrls.flatMap((url: string) => {
+          // Include URLs captured from network requests via webRequest (e.g. phncdn.com).
+          const allUrls = [...new Set([...rawUrls, ...capturedCdnUrls])];
+          const foundVars = allUrls.flatMap((url: string) => {
             if (isPreviewUrl(url)) return [];
             // Skip individual HLS/DASH segment files — only keep manifests and full files.
             if (/\/seg-\d+-[^/?#]*\.ts(\?|$)/i.test(url)) return [];
@@ -305,7 +321,10 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
         }
       } catch (e) { if (e instanceof PermissionNeeded) throw e; }
       return [];
-    } finally { await browser.tabs.remove(tab.id).catch(() => {}); }
+    } finally {
+      browser.webRequest.onHeadersReceived.removeListener(cdnListener);
+      await browser.tabs.remove(tab.id).catch(() => {});
+    }
   } finally { embedTabBusy = false; }
 }
 // Discovers the final URL after HTTP and JS redirects by opening a background tab.
