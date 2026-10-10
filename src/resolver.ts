@@ -167,6 +167,9 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
           try {
             result = await browser.scripting.executeScript({
               target: { tabId: tab.id, allFrames: true },
+              // MAIN world: lets the function read page JS globals like window.flashvars_*,
+              // window.jwplayer, window.videojs — not accessible from the isolated world.
+              world: 'MAIN' as any,
               func: (async () => {
                 const urls: string[] = [];
                 document.querySelectorAll('video').forEach((v: Element) => {
@@ -501,6 +504,19 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       // Fallback: open a silent background tab and capture manifests the Vimeo player loads.
       const variants = await readVimeoPlayer(input.sourceUrl, budget);
       return await resolveStreams({ ...input, variants }, budget);
+    }
+    // PornHub: Cloudflare makes headless fetchText always time out. Skip the
+    // 12 s wait and open a background tab directly to get fresh CDN URLs.
+    if (/\.(pornhub|phub)\.(com|net)(\/|$)/i.test(new URL(input.sourceUrl).hostname)) {
+      const phVars = await readEmbedPlayer(input.sourceUrl, budget);
+      if (phVars.length) {
+        const phResult = await resolveStreams({ ...input, variants: phVars }, budget);
+        if (phResult.status === 'ready') return phResult;
+        attempts.push(phResult);
+        const phMissing = phResult.requiredOrigins ?? [];
+        if (phMissing.length) return { status: 'site', reason: 'Нужен доступ к CDN видео для проверки.', requiredOrigins: phMissing };
+      }
+      return { status: 'site', reason: 'Откройте страницу видео PornHub в Firefox и включите сбор на её вкладке.', requiredOrigins: [] };
     }
     const fetchUrl = vimeoFetchUrl(input.sourceUrl);
     const page = await fetchText(fetchUrl, budget, undefined, undefined, true);
