@@ -584,8 +584,9 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
     const reason = error instanceof Error ? error.message : 'Не удалось проверить источник';
     const vk = /(^|\.)(vkvideo\.ru|vk\.com)$/.test(new URL(input.sourceUrl).hostname);
     if (vk && /NetworkError|Failed to fetch|fetch failed/i.test(reason)) return {status:'site',requiredOrigins:[],reason:'VK Видео не отдал страницу фоновому запросу (возможен цикл перенаправлений или требование сеанса). Откройте источник и включите сбор на его вкладке; автоматический доступ не подтверждён.'};
-    // When headless fetch is blocked (anti-scraping), try to resolve via background tabs.
-    if (/NetworkError|Failed to fetch|fetch failed/i.test(reason)) {
+    // When headless fetch is blocked (anti-scraping) or times out (Cloudflare JS challenge),
+    // try to resolve via background tabs.
+    if (/NetworkError|Failed to fetch|fetch failed|не ответил за \d+/i.test(reason)) {
       const allOrigins = () => [...new Set(attempts.flatMap(a => a.requiredOrigins ?? []))];
       // Embed-page URLs that arrived as initial variants (format=file, no media extension —
       // e.g. pbembed.me/embed/55864/ from og:video). Open those directly in a tab: the
