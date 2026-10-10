@@ -154,6 +154,7 @@ State {
   queue: string[],              // упорядоченный список id для воспроизведения
   filters: Filters,             // активные фильтры
   repeat, shuffle, autoplay,
+  dedupe: boolean,              // режим «Без дублей» (скрывать дубли по названию)
   dismissed: string[]           // исключённые id; очищается при clearQueue (полный сброс)
 }
 
@@ -180,6 +181,8 @@ Video {
 - `native` — ожидает замены на `file` после скачивания
 
 Fallback: при ошибке воспроизведения — retry через `resolver.ts`, затем переход к следующему.
+
+**«Без дублей»**: кнопка-тоггл в фильтрах боковой панели. Когда активна, `effectiveQueue()` возвращает результат `dedupeQueue()` — из дублей по названию остаётся видео с наилучшим разрешением (`ready` + max height).
 
 **phncdn.com**: для HLS-потоков с `*.phncdn.com` используется `PhncdnLoader` — кастомный hls.js-загрузчик, который проксирует все запросы сегментов через `browser.runtime.sendMessage({type:'cdnFetch'})`, чтобы background-страница добавила корректный `Referer: https://www.pornhub.com/`.
 

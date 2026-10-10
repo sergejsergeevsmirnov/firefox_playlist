@@ -15,7 +15,8 @@ firefox_videoplaylist/
 │
 ├── src/                           Исходный код расширения (TypeScript)
 │   ├── model.ts                   Типы: Video, Candidate, Variant, State, Session, Filters
-│   ├── core.ts                    Бизнес-логика: mergeCandidate, matches, enqueue, export
+│   ├── core.ts                    Бизнес-логика: mergeCandidate, matches, enqueue, export,
+│   │                               dedupeQueue() — дедупликация очереди по названию
 │   ├── media-policy.ts            isPreviewUrl(), isShortPreview()
 │   ├── capture-policy.ts          identity-функции, captureOrigins, vkResourceCandidates
 │   ├── quick-filters.ts           Пресеты фильтров (качество/длительность), quickFilters() с minDuration/maxDuration, encode/decode с durationDir
