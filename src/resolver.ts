@@ -167,9 +167,6 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
           try {
             result = await browser.scripting.executeScript({
               target: { tabId: tab.id, allFrames: true },
-              // MAIN world: lets the function read page JS globals like window.flashvars_*,
-              // window.jwplayer, window.videojs — not accessible from the isolated world.
-              world: 'MAIN' as any,
               func: (async () => {
                 const urls: string[] = [];
                 document.querySelectorAll('video').forEach((v: Element) => {
@@ -212,16 +209,6 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
                 try {
                   const vjs = (window as any).videojs?.players ?? {};
                   Object.values(vjs).forEach((p: any) => { try { tryAdd((p as any).currentSrc?.()); } catch {}; });
-                } catch {}
-                // PornHub: read mediaDefinitions from window.flashvars_* global object.
-                // The player embeds video URLs as JSON before the <video> element is ready,
-                // so this works even without waiting for player initialisation.
-                try {
-                  Object.keys(window).filter(k => k.startsWith('flashvars_')).forEach(k => {
-                    const fv = (window as any)[k];
-                    const defs: any[] = fv?.mediaDefinitions ?? [];
-                    defs.forEach((d: any) => { if (d?.videoUrl) tryAdd(d.videoUrl); });
-                  });
                 } catch {}
                 // Click common play-button selectors so lazy-loading players start fetching the video.
                 if (urls.length === 0) {
@@ -285,8 +272,51 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
               }) as unknown as () => void
             });
           } catch { /* executeScript may fail while tab is still loading */ }
+          // MAIN world (synchronous): reads page-defined JS globals like window.flashvars_*,
+          // window.jwplayer, window.videojs. These are invisible from the isolated world
+          // (Firefox Xray wrappers hide non-standard properties added by page scripts).
+          // The function must be synchronous — Firefox may not await a Promise in MAIN world.
+          let mainResult: browser.scripting.InjectionResult[] | null = null;
+          try {
+            mainResult = await browser.scripting.executeScript({
+              target: { tabId: tab.id, allFrames: false },
+              world: 'MAIN' as any,
+              func: (() => {
+                const found: string[] = [];
+                const tryAdd = (u: unknown) => { const s = String(u ?? ''); if (/^https?:\/\//.test(s) && !found.includes(s)) found.push(s); };
+                try { // PornHub: mediaDefinitions from window.flashvars_*
+                  Object.keys(window).filter(k => k.startsWith('flashvars_')).forEach(k => {
+                    const fv = (window as any)[k];
+                    (fv?.mediaDefinitions ?? []).forEach((d: any) => { if (d?.videoUrl) tryAdd(d.videoUrl); });
+                  });
+                } catch {}
+                try { // JWPlayer
+                  const jw = (window as any).jwplayer;
+                  if (typeof jw === 'function') {
+                    const readInst = (inst: any) => {
+                      try {
+                        const p = inst?.getConfig?.()?.playlist?.[0];
+                        [...(p?.sources ?? []), p ?? {}].forEach((s: any) => { tryAdd(s?.file); tryAdd(s?.src); });
+                        const item = inst?.getPlaylistItem?.();
+                        if (item) { tryAdd(item.file); (item.sources ?? []).forEach((s: any) => { tryAdd(s?.file); tryAdd(s?.src); }); }
+                      } catch {}
+                    };
+                    try { readInst(jw()); } catch {}
+                  }
+                } catch {}
+                try { // VideoJS
+                  const vjs = (window as any).videojs?.players ?? {};
+                  Object.values(vjs).forEach((p: any) => { try { tryAdd((p as any).currentSrc?.()); } catch {}; });
+                } catch {}
+                return found;
+              }) as unknown as () => void
+            });
+          } catch { /* MAIN world executeScript may fail on some pages */ }
           // Combine results from all frames (main document + iframes)
-          const rawUrls = [...new Set((result ?? []).flatMap((r: browser.scripting.InjectionResult) => (r?.result ?? []) as string[]))];
+          const rawUrls = [...new Set([
+            ...(result ?? []).flatMap((r: browser.scripting.InjectionResult) => (r?.result ?? []) as string[]),
+            ...(mainResult ?? []).flatMap((r: browser.scripting.InjectionResult) => (r?.result ?? []) as string[]),
+          ])];
           // Include URLs captured from network requests via webRequest (e.g. phncdn.com).
           const allUrls = [...new Set([...rawUrls, ...capturedCdnUrls])];
           const foundVars = allUrls.flatMap((url: string) => {
