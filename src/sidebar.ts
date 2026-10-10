@@ -24,11 +24,11 @@ $('#app').innerHTML = `
         <label>Сайты<input name="host" placeholder="example.org, video.example.com"></label>
         <div class="field-pair"><label>Слова в названии<input name="include" placeholder="Все указанные"></label><label>Слова исключения<input name="exclude" placeholder="Любое из указанных"></label></div>
         <div class="preset-actions"><button id="reset" type="button">Сбросить</button><button id="save-filter" type="button">Сохранить фильтр</button><button id="load-filter" type="button">Загрузить фильтр</button></div>
+        <button id="dedupe-btn" type="button" class="dedupe-toggle" aria-pressed="false" title="Показывать только лучшее видео из дублей с одинаковым названием">Без дублей</button>
         <input id="filter-file" type="file" accept=".json,application/json" hidden>
       </form>
     </section>
     <section><div class="list-toolbar"><div role="tablist" aria-label="Список видео"><button id="queue-tab" role="tab" aria-selected="true">Очередь <span id="queue-count" class="count">0</span></button><button id="found-tab" role="tab" aria-selected="false">Найдено <span id="found-count" class="count">0</span></button></div><button id="open-player" class="primary">▶ Плеер</button></div>
-      <label class="hint dedupe-opt" title="Показывать только лучшее видео из дублей с одинаковым названием"><input id="dedupe" type="checkbox"> Без дублей</label>
       <div id="queue" class="cards" role="tabpanel" aria-labelledby="queue-tab"></div><div id="found" class="cards" role="tabpanel" aria-labelledby="found-tab" hidden></div></section>
   </main><footer><p id="notice" role="status" aria-live="polite">Всё хранится в этом браузере. <span class="muted" id="version"></span></p></footer>`;
 
@@ -110,7 +110,7 @@ async function refresh(): Promise<void> {
   state = data.state; sessions = data.sessions; activeTab = tabs[0];
   if (!formLoaded) { populate(state.filters); formLoaded = true; }
   const signature = JSON.stringify({ queue: state.queue, filters: state.filters, sessions, tab: activeTab?.id, url: activeTab?.url,
-    broadAccess, missingApproved,
+    broadAccess, missingApproved, dedupe: state.dedupe,
     videos: Object.values(state.videos).map(({ position: _position, ...video }) => video) });
   if (signature !== renderedSignature) { renderedSignature = signature; render(); }
 }
@@ -185,7 +185,7 @@ function render(): void {
   } else if (!broadAccess && session?.frameOrigins.length) {
     frameAccess.append(button('Разрешить встроенные плееры', () => grant(session.frameOrigins), 'text-button'));
   }
-  $<HTMLInputElement>('#dedupe').checked = !!state.dedupe;
+  $('#dedupe-btn').setAttribute('aria-pressed', String(!!state.dedupe));
   const displayQueue = state.dedupe ? dedupeQueue(state.queue, state.videos) : state.queue;
   $('#queue-count').textContent = state.dedupe && displayQueue.length < state.queue.length
     ? `${displayQueue.length}/${state.queue.length}` : String(state.queue.length);
@@ -281,8 +281,9 @@ async function saveProxy(): Promise<void> {
 $('#proxy-save').onclick = () => { void saveProxy().catch(notifyError); };
 proxyInput.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); void saveProxy().catch(notifyError); } };
 
-$<HTMLInputElement>('#dedupe').onchange = () => {
-  void send('setDedupe', { dedupe: $<HTMLInputElement>('#dedupe').checked }).then(refresh).catch(notifyError);
+$('#dedupe-btn').onclick = () => {
+  const next = $('#dedupe-btn').getAttribute('aria-pressed') !== 'true';
+  void send('setDedupe', { dedupe: next }).then(refresh).catch(notifyError);
 };
 
 const toolbarEl = document.querySelector<HTMLElement>('.compact-toolbar')!;
