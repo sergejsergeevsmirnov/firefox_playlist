@@ -760,6 +760,10 @@ async function resolveStreams(input: Video, budget: AbortSignal): Promise<Partia
           // their own UAs and will receive 403. Mark as not portable so the M3U8
           // export skips these URLs rather than producing broken playlists.
           if (/(^|\.)vkuser\.net$/.test(new URL(stream.url).hostname)) portable = false;
+          // PornHub CDN (*.phncdn.com) requires Referer: https://www.pornhub.com/ on
+          // every segment request. External players don't send this header by default
+          // and receive 403. Use the built-in player (PhncdnLoader) instead of VLC.
+          if (/(^|\.)phncdn\.com$/.test(new URL(stream.url).hostname)) portable = false;
           variants.push(...info.variants.map(v => ({ ...v, portable })));
         }
       } catch (error) {
