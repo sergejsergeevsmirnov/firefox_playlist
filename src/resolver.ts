@@ -236,7 +236,9 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
                 // player setup calls (jwplayer, etc.) even before network requests fire.
                 const mediaRe = /https?:\/\/[^\s'"<>{}\[\]\\,|]+\.(?:mp4|webm|m3u8|mpd|flv|mov)(?:\?[^\s'"<>{}\[\]\\,|]*)?/gi;
                 document.querySelectorAll('script').forEach((s: Element) => {
-                  const text = s.textContent || '';
+                  // Unescape JSON-encoded forward slashes (\/ → /) so URLs like
+                  // "videoUrl":"https:\/\/hv-h.phncdn.com\/...\/master.m3u8" are matched.
+                  const text = (s.textContent || '').replace(/\\\//g, '/');
                   let m: RegExpExecArray | null; mediaRe.lastIndex = 0;
                   while ((m = mediaRe.exec(text)) !== null) {
                     if (!urls.includes(m[0])) urls.push(m[0]);
