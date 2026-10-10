@@ -128,20 +128,6 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
   try {
     const tab = await browser.tabs.create({ url: embedUrl, active: false });
     if (tab.id === undefined) return [];
-    // Intercept HLS/DASH manifest requests from the background tab via webRequest.
-    // Needed for CDNs like phncdn.com whose URLs are not exposed via <video>.currentSrc
-    // or window.jwplayer — the player requests them before any script-accessible state
-    // is set, and from a real browser context so the CDN returns HTTP 200.
-    const capturedCdnUrls: string[] = [];
-    const cdnListener = (details: browser.webRequest._OnHeadersReceivedDetails) => {
-      if (details.tabId !== tab.id || details.statusCode >= 400) return;
-      try {
-        const { pathname } = new URL(details.url);
-        if (/\.(m3u8|mpd)(\?|$)/i.test(pathname) && !capturedCdnUrls.includes(details.url))
-          capturedCdnUrls.push(details.url);
-      } catch {}
-    };
-    browser.webRequest.onHeadersReceived.addListener(cdnListener, { urls: ['*://*.phncdn.com/*'] }, ['responseHeaders']);
     try {
       await browser.tabs.update(tab.id, { muted: true });
       const deadline = Date.now() + 20000;
@@ -236,9 +222,7 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
                 // player setup calls (jwplayer, etc.) even before network requests fire.
                 const mediaRe = /https?:\/\/[^\s'"<>{}\[\]\\,|]+\.(?:mp4|webm|m3u8|mpd|flv|mov)(?:\?[^\s'"<>{}\[\]\\,|]*)?/gi;
                 document.querySelectorAll('script').forEach((s: Element) => {
-                  // Unescape JSON-encoded forward slashes (\/ → /) so URLs like
-                  // "videoUrl":"https:\/\/hv-h.phncdn.com\/...\/master.m3u8" are matched.
-                  const text = (s.textContent || '').replace(/\\\//g, '/');
+                  const text = s.textContent || '';
                   let m: RegExpExecArray | null; mediaRe.lastIndex = 0;
                   while ((m = mediaRe.exec(text)) !== null) {
                     if (!urls.includes(m[0])) urls.push(m[0]);
@@ -272,54 +256,9 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
               }) as unknown as () => void
             });
           } catch { /* executeScript may fail while tab is still loading */ }
-          // MAIN world (synchronous): reads page-defined JS globals like window.flashvars_*,
-          // window.jwplayer, window.videojs. These are invisible from the isolated world
-          // (Firefox Xray wrappers hide non-standard properties added by page scripts).
-          // The function must be synchronous — Firefox may not await a Promise in MAIN world.
-          let mainResult: browser.scripting.InjectionResult[] | null = null;
-          try {
-            mainResult = await browser.scripting.executeScript({
-              target: { tabId: tab.id, allFrames: false },
-              world: 'MAIN' as any,
-              func: (() => {
-                const found: string[] = [];
-                const tryAdd = (u: unknown) => { const s = String(u ?? ''); if (/^https?:\/\//.test(s) && !found.includes(s)) found.push(s); };
-                try { // PornHub: mediaDefinitions from window.flashvars_*
-                  Object.keys(window).filter(k => k.startsWith('flashvars_')).forEach(k => {
-                    const fv = (window as any)[k];
-                    (fv?.mediaDefinitions ?? []).forEach((d: any) => { if (d?.videoUrl) tryAdd(d.videoUrl); });
-                  });
-                } catch {}
-                try { // JWPlayer
-                  const jw = (window as any).jwplayer;
-                  if (typeof jw === 'function') {
-                    const readInst = (inst: any) => {
-                      try {
-                        const p = inst?.getConfig?.()?.playlist?.[0];
-                        [...(p?.sources ?? []), p ?? {}].forEach((s: any) => { tryAdd(s?.file); tryAdd(s?.src); });
-                        const item = inst?.getPlaylistItem?.();
-                        if (item) { tryAdd(item.file); (item.sources ?? []).forEach((s: any) => { tryAdd(s?.file); tryAdd(s?.src); }); }
-                      } catch {}
-                    };
-                    try { readInst(jw()); } catch {}
-                  }
-                } catch {}
-                try { // VideoJS
-                  const vjs = (window as any).videojs?.players ?? {};
-                  Object.values(vjs).forEach((p: any) => { try { tryAdd((p as any).currentSrc?.()); } catch {}; });
-                } catch {}
-                return found;
-              }) as unknown as () => void
-            });
-          } catch { /* MAIN world executeScript may fail on some pages */ }
           // Combine results from all frames (main document + iframes)
-          const rawUrls = [...new Set([
-            ...(result ?? []).flatMap((r: browser.scripting.InjectionResult) => (r?.result ?? []) as string[]),
-            ...(mainResult ?? []).flatMap((r: browser.scripting.InjectionResult) => (r?.result ?? []) as string[]),
-          ])];
-          // Include URLs captured from network requests via webRequest (e.g. phncdn.com).
-          const allUrls = [...new Set([...rawUrls, ...capturedCdnUrls])];
-          const foundVars = allUrls.flatMap((url: string) => {
+          const rawUrls = [...new Set((result ?? []).flatMap((r: browser.scripting.InjectionResult) => (r?.result ?? []) as string[]))];
+          const foundVars = rawUrls.flatMap((url: string) => {
             if (isPreviewUrl(url)) return [];
             // Skip individual HLS/DASH segment files — only keep manifests and full files.
             if (/\/seg-\d+-[^/?#]*\.ts(\?|$)/i.test(url)) return [];
@@ -366,10 +305,7 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
         }
       } catch (e) { if (e instanceof PermissionNeeded) throw e; }
       return [];
-    } finally {
-      browser.webRequest.onHeadersReceived.removeListener(cdnListener);
-      await browser.tabs.remove(tab.id).catch(() => {});
-    }
+    } finally { await browser.tabs.remove(tab.id).catch(() => {}); }
   } finally { embedTabBusy = false; }
 }
 // Discovers the final URL after HTTP and JS redirects by opening a background tab.
@@ -535,19 +471,6 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       const variants = await readVimeoPlayer(input.sourceUrl, budget);
       return await resolveStreams({ ...input, variants }, budget);
     }
-    // PornHub: Cloudflare makes headless fetchText always time out. Skip the
-    // 12 s wait and open a background tab directly to get fresh CDN URLs.
-    if (/\.(pornhub|phub)\.(com|net)(\/|$)/i.test(new URL(input.sourceUrl).hostname)) {
-      const phVars = await readEmbedPlayer(input.sourceUrl, budget);
-      if (phVars.length) {
-        const phResult = await resolveStreams({ ...input, variants: phVars }, budget);
-        if (phResult.status === 'ready') return phResult;
-        attempts.push(phResult);
-        const phMissing = phResult.requiredOrigins ?? [];
-        if (phMissing.length) return { status: 'site', reason: 'Нужен доступ к CDN видео для проверки.', requiredOrigins: phMissing };
-      }
-      return { status: 'site', reason: 'Откройте страницу видео PornHub в Firefox и включите сбор на её вкладке.', requiredOrigins: [] };
-    }
     const fetchUrl = vimeoFetchUrl(input.sourceUrl);
     const page = await fetchText(fetchUrl, budget, undefined, undefined, true);
     const doc = new DOMParser().parseFromString(page.text, 'text/html');
@@ -661,9 +584,8 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
     const reason = error instanceof Error ? error.message : 'Не удалось проверить источник';
     const vk = /(^|\.)(vkvideo\.ru|vk\.com)$/.test(new URL(input.sourceUrl).hostname);
     if (vk && /NetworkError|Failed to fetch|fetch failed/i.test(reason)) return {status:'site',requiredOrigins:[],reason:'VK Видео не отдал страницу фоновому запросу (возможен цикл перенаправлений или требование сеанса). Откройте источник и включите сбор на его вкладке; автоматический доступ не подтверждён.'};
-    // When headless fetch is blocked (anti-scraping) or times out (Cloudflare JS challenge),
-    // try to resolve via background tabs.
-    if (/NetworkError|Failed to fetch|fetch failed|не ответил за \d+/i.test(reason)) {
+    // When headless fetch is blocked (anti-scraping), try to resolve via background tabs.
+    if (/NetworkError|Failed to fetch|fetch failed/i.test(reason)) {
       const allOrigins = () => [...new Set(attempts.flatMap(a => a.requiredOrigins ?? []))];
       // Embed-page URLs that arrived as initial variants (format=file, no media extension —
       // e.g. pbembed.me/embed/55864/ from og:video). Open those directly in a tab: the
@@ -832,15 +754,6 @@ async function resolveStreams(input: Video, budget: AbortSignal): Promise<Partia
               if (!check.ok) throw new Error(`Медиасегмент недоступен: HTTP ${check.status}`);
             }
           }
-          // VK CDN (*.vkuser.net) tokens carry srcAg=GECKO: the CDN verifies the
-          // User-Agent matches Gecko/Firefox. External players (VLC, mpv, …) use
-          // their own UAs and will receive 403. Mark as not portable so the M3U8
-          // export skips these URLs rather than producing broken playlists.
-          if (/(^|\.)vkuser\.net$/.test(new URL(stream.url).hostname)) portable = false;
-          // PornHub CDN (*.phncdn.com) requires Referer: https://www.pornhub.com/ on
-          // every segment request. External players don't send this header by default
-          // and receive 403. Use the built-in player (PhncdnLoader) instead of VLC.
-          if (/(^|\.)phncdn\.com$/.test(new URL(stream.url).hostname)) portable = false;
           variants.push(...info.variants.map(v => ({ ...v, portable })));
         }
       } catch (error) {
