@@ -754,6 +754,11 @@ async function resolveStreams(input: Video, budget: AbortSignal): Promise<Partia
               if (!check.ok) throw new Error(`Медиасегмент недоступен: HTTP ${check.status}`);
             }
           }
+          // VK CDN (*.vkuser.net) tokens carry srcAg=GECKO: the CDN verifies the
+          // User-Agent matches Gecko/Firefox. External players (VLC, mpv, …) use
+          // their own UAs and will receive 403. Mark as not portable so the M3U8
+          // export skips these URLs rather than producing broken playlists.
+          if (/(^|\.)vkuser\.net$/.test(new URL(stream.url).hostname)) portable = false;
           variants.push(...info.variants.map(v => ({ ...v, portable })));
         }
       } catch (error) {
