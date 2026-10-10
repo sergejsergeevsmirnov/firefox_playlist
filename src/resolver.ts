@@ -210,6 +210,16 @@ async function readEmbedPlayer(embedUrl: string, budget: AbortSignal): Promise<V
                   const vjs = (window as any).videojs?.players ?? {};
                   Object.values(vjs).forEach((p: any) => { try { tryAdd((p as any).currentSrc?.()); } catch {}; });
                 } catch {}
+                // PornHub: read mediaDefinitions from window.flashvars_* global object.
+                // The player embeds video URLs as JSON before the <video> element is ready,
+                // so this works even without waiting for player initialisation.
+                try {
+                  Object.keys(window).filter(k => k.startsWith('flashvars_')).forEach(k => {
+                    const fv = (window as any)[k];
+                    const defs: any[] = fv?.mediaDefinitions ?? [];
+                    defs.forEach((d: any) => { if (d?.videoUrl) tryAdd(d.videoUrl); });
+                  });
+                } catch {}
                 // Click common play-button selectors so lazy-loading players start fetching the video.
                 if (urls.length === 0) {
                   ['.jw-icon-play', '.fp-play', '[class*="play-btn"]', '[class*="playbtn"]', '[class*="play_btn"]', '[class*="playBtn"]',
