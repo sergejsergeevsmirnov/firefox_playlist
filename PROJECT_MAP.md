@@ -99,6 +99,20 @@ player.ts         ← core.ts, model.ts, ui.ts
 - Разрешения: `https://*.vimeo.com/*`, `https://*.vimeocdn.com/*`
 - Статус: **Путь 1 — без вкладок** (для публичных видео); **Путь 2 — фоновая вкладка** (при 403)
 
+### PornHub (`src/discovery.ts` → `discoverGeneric()` + `src/resolver.ts` → `probeFile()`)
+
+**Нет провайдерного модуля** — PornHub обрабатывается общим механизмом:
+
+- Определение: нет `identity()`-функции; `fetchText(pornhub.com)` всегда таймаутит (Cloudflare).
+- **Единственный рабочий путь**: content-script на активной вкладке PH.
+  1. `discoverGeneric()` находит `<video>` с `currentSrc` → `https://*.phncdn.com/.../master.m3u8?...&ipa=1&validfrom=...&validto=...`
+  2. `sendMessage('discovered')` → `resolveVideo(input)` с `input.variants = [{url, format:'hls'}]`
+  3. `resolveStreams(existing)` → `probeFile()` делает `GET bytes=0-1023` с `Referer: https://www.pornhub.com/` → HTTP 206 → `portable: true` → **`ready`**
+- CDN URL живут 2 часа (`validfrom`/`validto`) и привязаны к IP (`ipa=1`). После истечения нужно перейти на вкладку PH, снова нажать «Собирать».
+- **Критично**: не добавлять отдельную ветку `if (pornhub)` в `resolveVideo()` — она перехватывает кандидатов с живыми CDN вариантами и ломает сбор. Воспроизведение обеспечивают `webRequest` + `PhncdnLoader` (см. «PornHub / phncdn.com» в CLAUDE.md).
+- Разрешения: `https://*.phncdn.com/*` уже покрыты широкими `http://*/*`, `https://*/*`.
+- Статус: **работает только с активной вкладкой PH** (content-script).
+
 ### Яндекс.Видео (`src/discovery.ts` → `discoverYandex()`)
 - Определение: `isYandexVideo()` — yandex.ru/video, ya.ru/video и аналоги
 - Механизм: парсинг DOM-карточек `[data-video]`, `.serp-item`, `.VideoCard` и т.д.

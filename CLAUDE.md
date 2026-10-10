@@ -35,6 +35,7 @@ pnpm run package    # zip → artifacts/
 | YouTube | `src/youtube.ts` + `src/native.ts` | yt-dlp мост (приоритет) → youtubei.js → embed |
 | Vimeo | `src/vimeo.ts` + `src/capture-policy.ts` | GET `player.vimeo.com/video/{id}/config` (API-first) **или** перехват манифестов CDN (fallback) |
 | Яндекс.Видео | `src/discovery.ts` → `discoverYandex()` | Каталог: парсинг карточек |
+| PornHub | `src/discovery.ts` → `discoverGeneric()` + `src/resolver.ts` → `probeFile()` | `<video currentSrc>` с активной вкладки → CDN URL |
 | Общий | `src/discovery.ts` → `discoverGeneric()` | video-теги, og:video, JSON-LD |
 
 ## Ключевые модули
@@ -51,15 +52,27 @@ pnpm run package    # zip → artifacts/
 - **`src/native.ts`** — HTTP-клиент yt-dlp моста: `nativePing()`, `nativeStatus()`, `nativeDownload()`, `nativeCleanup()`, `nativeGetProxy()`, `nativeSetProxy()`
 - **`src/ui.ts`** — DOM-хелперы `$`, `element`, `button`, `send`, `notify`
 
-### phncdn.com (PornHub CDN)
+### PornHub / phncdn.com
 
-`moz-extension://` origin не может выставить cross-origin `Referer`, поэтому phncdn.com режет соединения из страницы плеера. Решение — три слоя:
+**Рабочий поток (единственный — не менять):**
 
-1. **`webRequest.onBeforeSendHeaders`** в `background.ts` подставляет `Referer: https://www.pornhub.com/` для всех запросов к `*.phncdn.com` (нужно разрешение `webRequestBlocking` в манифесте).
+1. Пользователь переходит на страницу PornHub и нажимает «Собирать».
+2. `content.ts` вызывает `discoverGeneric()` — находит `<video>` элементы с `currentSrc` → CDN URL вида `https://*.phncdn.com/.../master.m3u8?...&validfrom=...&validto=...`.  
+   Эти URL имеют 2-часовой срок жизни (`validfrom`/`validto`) и привязку к IP (`ipa=1`).
+3. `sendMessage('discovered', candidates)` → `background.ts` → `resolveVideo(input)` с `input.variants = [{ url: 'https://...phncdn.com/...', format: 'hls' }]`.
+4. `resolveVideo()` сразу вызывает `resolveStreams(existing)` — обрабатывает переданные варианты без `fetchText()` и без открытия вкладки.
+5. `probeFile()` отправляет `GET bytes=0-1023` к phncdn.com с `Referer: https://www.pornhub.com/` (строка 113 `resolver.ts`) — CDN принимает запрос, статус 206.
+6. Вариант получает `portable: true`, статус → **`ready`**. Весь цикл — несколько секунд.
+
+**Почему нет провайдерного модуля для PornHub:**  
+PornHub не требует API-запросов — CDN URL уже в `<video currentSrc>` на странице. `fetchText(pornhub.com)` блокируется Cloudflare (timeout 12 с). Любой PH-специфичный путь в `resolveVideo()`, который перехватывает PH URL, ломает поток с активной вкладки.  
+**Правило: в `resolveVideo()` не добавлять отдельную ветку для `pornhub.com`.**
+
+**Три слоя для воспроизведения в плеере** (`moz-extension://` origin не может выставить cross-origin `Referer`):
+
+1. **`webRequest.onBeforeSendHeaders`** в `background.ts` подставляет `Referer: https://www.pornhub.com/` для всех запросов к `*.phncdn.com`.
 2. **`webRequest.onHeadersReceived`** добавляет `Access-Control-Allow-Origin: *` в ответы phncdn.com.
-3. **`PhncdnLoader`** в `player.ts` — кастомный hls.js-загрузчик: перехватывает все запросы сегментов HLS и проксирует их через `browser.runtime.sendMessage({ type: 'cdnFetch', url })` → background-страница делает `fetch()` с нужным `referrer` и возвращает бинарный буфер или текст плейлиста.
-
-`background.ts` обрабатывает `cdnFetch`-сообщения: загружает URL с `referrer: 'https://www.pornhub.com/'`, возвращает `{ kind: 'text'|'buffer', text|buffer, url, status }`.
+3. **`PhncdnLoader`** в `player.ts` — кастомный hls.js-загрузчик: проксирует сегменты HLS через `browser.runtime.sendMessage({ type: 'cdnFetch', url })` → background делает `fetch()` с нужным `referrer`, возвращает `{ kind: 'text'|'buffer', text|buffer, url, status }`. Активируется автоматически когда hostname `currentVariant.url` совпадает с `*.phncdn.com`.
 
 ### Дедупликация очереди («Без дублей»)
 
@@ -178,7 +191,7 @@ Invoke-WebRequest http://127.0.0.1:8765/status
 - **YouTube**: если мост жив (`nativePing()`), сразу возвращает `native`-вариант; ensureDownload скачивает в фоне и заменяет вариант на `file`.
 - Формат `youtube` используется только для embed-iframe (плеер не умеет его скачивать).
 - `portable: true` на варианте = URL доступен для VLC-экспорта.
-- **phncdn.com (PornHub CDN)**: `ipa=1` = IP-anchored URL; `validfrom`/`validto` = 2-часовой окно; `moz-extension://` origin режется CDN → три слоя исправления (webRequest + PhncdnLoader + cdnFetch). `PhncdnLoader` активируется автоматически когда `currentVariant.url` hostname совпадает с `*.phncdn.com`.
+- **PornHub (phncdn.com CDN)**: единственный рабочий путь — content-script на активной вкладке PH. `discoverGeneric()` читает `<video currentSrc>` → свежий CDN URL → `resolveStreams(existing)` → `probeFile()` с `Referer: https://www.pornhub.com/`. Всё проходит за секунды. `fetchText(pornhub.com)` всегда таймаутит (Cloudflare). Попытки добавить PH-специфичный путь в `resolveVideo()` (коммиты a0b0c7a–078a59c) сломали сбор — ветка перехватывала кандидатов с уже живыми CDN вариантами. Откат к 7da0053 восстановил работу.
 - **Яндекс preview URL в restoreState** (`core.ts`): `isPreviewUrl('yandex.ru/video/preview/...')` возвращало `true` (путь содержит `/preview/`) — URL исчезал после перезапуска расширения. Исправление: добавлен `|| isYandexVideo(v.url)` в фильтр вариантов в `restoreState`. Циклическая зависимость `core.ts ↔ discovery.ts` допустима (используется только внутри тела функции, Vite обрабатывает корректно).
 - **Last-resort: открытие страницы-источника** (`resolver.ts`): условие `!embeds.length && !embedsMissingBefore.length` заменено на `!embedsMissingBefore.length && !embeds.includes(fetchUrl)`. Теперь `readEmbedPlayer(fetchUrl)` вызывается даже если на странице есть embed-iframe (рекламные виджеты), но они не дали результата. Это позволяет авто-повтору получить свежий CDN-URL при повторном открытии страницы-источника в фоновой вкладке.
 - **clearQueue**: вызывает `endSession` для всех сессий — сбор полностью останавливается. После очистки пользователь нажимает «Собирать» вручную. При повторном старте (`start`) фоновый скрипт после `inject` отправляет `scanNow` через `browser.tabs.sendMessage`: если `executeScript` попал в гонку при остановке старого экземпляра, уцелевший контент-скрипт всё равно немедленно начнёт сканирование с новым токеном.
