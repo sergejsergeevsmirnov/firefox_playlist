@@ -11,6 +11,9 @@ export interface Variant {
   audio?: boolean;
   subtitles?: string[];
   portable?: boolean;
+  /** Referer the file host requires (hotlink protection), e.g. the embed player page found via
+   *  Yandex. Sent only on the extension's own requests — see referer-rules.ts. */
+  referer?: string;
   // Adaptive manifests remain the playback URL: this preserves separate audio tracks.
   qualityIndex?: number;
 }

@@ -1,4 +1,4 @@
-import { discoverGeneric, isYandexVideo, rankSourceCandidates } from './discovery';
+import { discoverGeneric, isYandexVideo, rankSourceCandidates, yandexEmbedUrls } from './discovery';
 import { httpUrl, mediaFormat, originPattern } from './core';
 import { parseDash, parseHls } from './manifests';
 import type { Candidate, Video, Variant } from './model';
@@ -11,6 +11,7 @@ import { readVkPlayer, readVkStreams } from './vk';
 import { readYoutubePlayer, youtubeEmbedUrl } from './youtube';
 import { vimeoConfigUrl, vimeoStreams, readVimeoPlayer } from './vimeo';
 import { nativePing } from './native';
+import { useReferer } from './referer-rules';
 
 export class PermissionNeeded extends Error {
   /** Set when a cross-domain redirect was detected: the canonical URL the source actually lives at. */
@@ -350,10 +351,93 @@ function discoverTabRedirect(url: string): Promise<string> {
   redirectDiscoveryCache.set(origin, discovery);
   return discovery;
 }
+/**
+ * Last-resort source for catalog videos: the Yandex preview page of this exact video.
+ * 1) Static: read the player Yandex embeds ("embedUrl", e.g. ppembed.com/embed/42568) from the
+ *    preview HTML and take the stream from that player's HTML — no tabs, a few seconds.
+ * 2) Background tab: the embed page itself, then the whole preview page (previous behaviour).
+ * Throws PermissionNeeded; other errors are recorded in attempts.
+ */
+/** Some players embedded by Yandex (e.g. noodlemagazine.net/player/…) answer 403 without the
+ *  Referer of the page that embeds them. fetch() from the extension cannot send a cross-origin
+ *  referrer, so set the header at the webRequest layer — for the extension's own requests
+ *  (tabId -1) to this origin, only while the fetch runs. */
+async function withYandexReferer<T>(url: string, run: () => Promise<T>): Promise<T> {
+  const listener = (details: { requestHeaders?: { name: string; value?: string }[] }) => {
+    const requestHeaders = (details.requestHeaders ?? []).filter(h => h.name.toLowerCase() !== 'referer');
+    requestHeaders.push({ name: 'Referer', value: 'https://yastatic.net/' });
+    return { requestHeaders };
+  };
+  browser.webRequest.onBeforeSendHeaders.addListener(listener, { urls: [originPattern(url)], tabId: -1 }, ['blocking', 'requestHeaders']);
+  try { return await run(); } finally { browser.webRequest.onBeforeSendHeaders.removeListener(listener); }
+}
+/** Sources from common embed player configs, read whole (the generic media URL scan cuts them):
+ *  - KVS flashvars `video_url: '…/263249.mp4/?v-acctoken=…'`, `video_alt_url…` — the access
+ *    token after ".mp4/" is required (without it the file answers 404). Obfuscated
+ *    "function/0/…" values are skipped.
+ *  - Playerjs `file: "[480p]./path.mp4 or ./alt.mp4,[720p]…"`; a "./" path is resolved by the
+ *    player from the site root (5xxx-embed.weirdcdn.com/common/mp4/video.mp4?…), not from the
+ *    page directory. Encrypted Playerjs strings (starting with "#") are skipped. */
+export function playerjsFiles(html: string, base: string): Variant[] {
+  const found = new Map<string, Variant>();
+  const add = (raw: string, needsMediaPath: boolean) => {
+    const url = httpUrl(raw.trim().replace(/^\.\//, '/'), base);
+    if (!url || isPreviewUrl(url)) return;
+    const format = mediaFormat(url);
+    if (format || !needsMediaPath) found.set(url, { url, format: format ?? 'file' });
+  };
+  for (const m of html.matchAll(/\bvideo_(?:alt_)?url\d*\s*:\s*'(https?:\/\/[^']+)'/g)) add(m[1], false);
+  for (const m of html.matchAll(/\bfile\s*[:=]\s*["']([^"'#][^"']*)["']/g)) {
+    for (const part of m[1].split(/\s+or\s+|,(?=\[)/)) add(part.replace(/^\[[^\]]*\]/, ''), true);
+  }
+  return [...found.values()].slice(0, 4);
+}
+async function resolveYandexPreview(preview: string, input: Video, budget: AbortSignal, attempts: Partial<Video>[]): Promise<Partial<Video> | undefined> {
+  // Files found through an embed player get that player as Referer: hotlink-protected hosts
+  // (www.ebalka.video/get_file/…) answer 403 without it — for the check and for playback.
+  const tryVariants = async (variants: Variant[], embed?: string) => {
+    if (!variants.length) return;
+    const referer = embed ? new URL(embed).origin + '/' : undefined;
+    const tagged = referer ? variants.map(v => ({ ...v, referer })) : variants;
+    tagged.forEach(useReferer);
+    const result = await resolveStreams({ ...input, variants: tagged }, budget);
+    if (result.status === 'ready') return referer ? { ...result, variants: result.variants?.map(v => ({ ...v, referer })) } : result;
+    attempts.push(result);
+  };
+  let embeds: string[] = [];
+  try { embeds = yandexEmbedUrls((await fetchText(preview, budget, 4 * 1024 * 1024)).text); }
+  catch (error) { if (error instanceof PermissionNeeded) throw error; budget.throwIfAborted(); }
+  for (const embed of embeds) {
+    try {
+      const frame = await withYandexReferer(embed, () => fetchText(embed, budget));
+      // Players often keep stream URLs in JSON with escaped slashes (https:\/\/…, e.g. the
+      // PornHub embed's mediaDefinitions); unescape so the media URL scan can see them.
+      const doc = new DOMParser().parseFromString(frame.text.replace(/\\\//g, '/'), 'text/html');
+      // Player configs first: they keep full URLs (tokens included) that the generic scan cuts.
+      const groups = [playerjsFiles(frame.text, frame.url),
+        ...rankSourceCandidates(discoverGeneric(doc, frame.url), input.expectedDuration).slice(0, 3).map(c => c.variants)];
+      for (const variants of groups) {
+        const result = await tryVariants(variants, embed);
+        if (result) return result;
+      }
+    } catch (error) { if (error instanceof PermissionNeeded) throw error; budget.throwIfAborted(); }
+  }
+  for (const page of [...embeds, preview]) {
+    // readEmbedPlayer() skips (returns []) while another check holds the background tab —
+    // wait for it here instead of silently losing this step.
+    while (embedTabBusy) { budget.throwIfAborted(); await new Promise(r => setTimeout(r, 500)); }
+    // On the preview page the files load inside Yandex's iframe of embeds[0], with it as Referer.
+    const result = await tryVariants(await readEmbedPlayer(page, budget), page === preview ? embeds[0] : page);
+    if (result) return result;
+  }
+}
 export async function resolveVideo(input: Video, allowBrowser = false, cancellation?: AbortSignal, vkCaptureFailure?: string, vkForeground = false): Promise<Partial<Video>> {
   const timeout = AbortSignal.timeout(60000);
   const budget = cancellation ? AbortSignal.any([timeout,cancellation]) : timeout;
   const attempts: Partial<Video>[] = [];
+  // The Yandex fallback runs after the source path failed, often with little of the 60 s left
+  // (slow sources, background tabs) — it gets its own 30 s, still cancelled with the collection.
+  const yandexBudget = () => cancellation ? AbortSignal.any([AbortSignal.timeout(30000), cancellation]) : AbortSignal.timeout(30000);
   try {
     const existing = input.variants.filter(v => !isPreviewUrl(v.url));
     if (existing.length) {
@@ -547,6 +631,13 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
         }
       }
     }
+    // The source answered (often a dead or parked domain with HTTP 200) but gave no stream:
+    // take it from the Yandex preview page of this video. The source URL is kept as is —
+    // a redirect target here is usually a parking page.
+    for (const preview of (input.variants ?? []).filter(v => isYandexVideo(v.url)).map(v => v.url)) {
+      const viaYandex = await resolveYandexPreview(preview, input, yandexBudget(), attempts);
+      if (viaYandex) return viaYandex;
+    }
     const missing = [...new Set(attempts.flatMap(result => result.requiredOrigins ?? []))];
     return withCanonical({ status: 'site', variants: [], duration: input.expectedDuration ?? input.duration, requiredOrigins: missing,
       reason: missing.length ? 'Нужен доступ к сайту полного видео или CDN.' : attempts.find(a => a.reason)?.reason || 'Полный поток не найден в открытых данных. Откройте оригинал и запустите его плеер.' });
@@ -580,7 +671,18 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       return r;
     }
     if (cancellation?.aborted) return {status:'site',reason:'Проверка отменена при остановке сбора.',requiredOrigins:[]};
-    if (budget.aborted) return {status:'error',reason:'Проверка превысила 60 секунд. Источник или его медиасервер не ответил вовремя.',requiredOrigins:[]};
+    if (budget.aborted) {
+      // The source path used up its 60 s — the Yandex preview of this video may still have the stream.
+      for (const preview of (input.variants ?? []).filter(v => isYandexVideo(v.url)).map(v => v.url)) {
+        try {
+          const r = await resolveYandexPreview(preview, input, yandexBudget(), attempts);
+          if (r) return r;
+        } catch (yandexError) {
+          if (yandexError instanceof PermissionNeeded) return { status: 'site', reason: yandexError.message, requiredOrigins: yandexError.origins };
+        }
+      }
+      return {status:'error',reason:'Проверка превысила 60 секунд. Источник или его медиасервер не ответил вовремя.',requiredOrigins:[]};
+    }
     const reason = error instanceof Error ? error.message : 'Не удалось проверить источник';
     const vk = /(^|\.)(vkvideo\.ru|vk\.com)$/.test(new URL(input.sourceUrl).hostname);
     if (vk && /NetworkError|Failed to fetch|fetch failed/i.test(reason)) return {status:'site',requiredOrigins:[],reason:'VK Видео не отдал страницу фоновому запросу (возможен цикл перенаправлений или требование сеанса). Откройте источник и включите сбор на его вкладке; автоматический доступ не подтверждён.'};
@@ -653,15 +755,8 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
         .map(v => v.url);
       for (const fallbackUrl of yandexFallbacksNet) {
         try {
-          const vars = await readEmbedPlayer(fallbackUrl, budget);
-          if (vars.length) {
-            const r = await resolveStreams({ ...input, variants: vars }, budget);
-            if (r.status === 'ready') {
-              const yandexVar = { url: fallbackUrl, format: 'file' as const };
-              return { ...r, variants: [...(r.variants ?? []), yandexVar] };
-            }
-            attempts.push(r);
-          }
+          const r = await resolveYandexPreview(fallbackUrl, input, yandexBudget(), attempts);
+          if (r) return r;
         } catch (tabErr) {
           if (tabErr instanceof PermissionNeeded)
             return { status: 'site', reason: tabErr.message, requiredOrigins: [...new Set([...allOrigins(), ...tabErr.origins])] };
@@ -669,11 +764,9 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
       }
       return { status: 'error', reason: 'Firefox не смог загрузить источник. Возможны блокировка запроса, перенаправление на другой сайт или недоступность сервера. Откройте источник и включите сбор на его вкладке. Подробности: ' + reason, requiredOrigins: [] };
     }
-    // HTTP 4xx or timeout: external source page is gone or not responding —
-    // try Yandex preview URL stored as a fallback variant.
-    // The Yandex player loads a working CDN URL regardless of external site status.
-    // Skip static fetch (Yandex is a React SPA) and go straight to background tab.
-    if (/HTTP 4\d\d|не ответил за \d+ секунд/i.test(reason)) {
+    // HTTP 4xx/5xx or timeout: external source page is gone or not responding (e.g. 502) —
+    // take the stream from the Yandex preview page of this video (resolveYandexPreview).
+    if (/HTTP [45]\d\d|не ответил за \d+ секунд/i.test(reason)) {
       const yandexFallbacks = (input.variants ?? [])
         .filter(v => v.format === 'file' && !mediaFormat(v.url) && isYandexVideo(v.url))
         .map(v => v.url);
@@ -681,18 +774,8 @@ export async function resolveVideo(input: Video, allowBrowser = false, cancellat
         const allOriginsY = () => [...new Set(attempts.flatMap(a => a.requiredOrigins ?? []))];
         for (const fallbackUrl of yandexFallbacks) {
           try {
-            const vars = await readEmbedPlayer(fallbackUrl, budget);
-            if (vars.length) {
-              const r = await resolveStreams({ ...input, variants: vars }, budget);
-              if (r.status === 'ready') {
-                // Re-attach the Yandex preview URL as a variant so it survives
-                // Object.assign in background.ts and stays available for future re-checks.
-                // Without this the Yandex URL is lost after the first successful check.
-                const yandexVar = { url: fallbackUrl, format: 'file' as const };
-                return { ...r, variants: [...(r.variants ?? []), yandexVar] };
-              }
-              attempts.push(r);
-            }
+            const r = await resolveYandexPreview(fallbackUrl, input, yandexBudget(), attempts);
+            if (r) return r;
           } catch (tabErr) {
             if (tabErr instanceof PermissionNeeded)
               return { status: 'site', reason: tabErr.message, requiredOrigins: [...new Set([...allOriginsY(), ...tabErr.origins])] };

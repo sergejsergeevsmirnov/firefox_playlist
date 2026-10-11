@@ -33,11 +33,15 @@ vimeo.ts          ← core.ts, model.ts, capture-policy.ts
 native.ts         ← (независимый — HTTP-клиент)
 youtube.ts        ← core.ts, model.ts, capture-policy.ts
 
+referer-rules.ts  ← model.ts (webRequest: Referer для hotlink-защищённых файлов)
+
 resolver.ts       ← core.ts, model.ts, media-policy.ts, manifests.ts, discovery.ts,
-                     rutube.ts, ok.ts, dzen.ts, vk.ts, vimeo.ts, youtube.ts, native.ts, capture-policy.ts
+                     rutube.ts, ok.ts, dzen.ts, vk.ts, vimeo.ts, youtube.ts, native.ts, capture-policy.ts,
+                     referer-rules.ts
 
 background.ts     ← core.ts, model.ts, resolver.ts, task-pool.ts, media-policy.ts,
-                     discovery.ts, quick-filters.ts, dzen.ts, ok.ts, capture-policy.ts, native.ts
+                     discovery.ts, quick-filters.ts, dzen.ts, ok.ts, capture-policy.ts, native.ts,
+                     referer-rules.ts
 
 content.ts        ← discovery.ts, core.ts, capture-policy.ts, model.ts
 
@@ -115,8 +119,24 @@ player.ts         ← core.ts, model.ts, ui.ts
 
 ### Яндекс.Видео (`src/discovery.ts` → `discoverYandex()`)
 - Определение: `isYandexVideo()` — yandex.ru/video, ya.ru/video и аналоги
-- Механизм: парсинг DOM-карточек `[data-video]`, `.serp-item`, `.VideoCard` и т.д.
-- Возвращает `Candidate` с `discovery: 'catalog'` и пустым `variants[]` — URL страницы источника, проверяется отдельно
+- Механизм: парсинг DOM-карточек `[data-video]`, `.serp-item`, `.VideoCard`, `.VideoSnippet` и т.д.
+- Возвращает `Candidate` с `discovery: 'catalog'`, `sourceUrl` = страница источника, и **одним вариантом** —
+  preview-страницей Яндекса **этой карточки** в короткой форме `https://yandex.ru/video/preview/{id}`
+  (`yandexPreviewUrl()` отбрасывает `parent-reqid`/`text`/`from`).
+- **Fallback через Яндекс** (`resolver.ts` → `resolveYandexPreview()`), когда источник не отдал поток
+  (мёртвый/припаркованный домен с HTTP 200, HTTP 4xx/5xx, сетевая ошибка, таймаут, исчерпан 60-сек. бюджет):
+  1. `fetchText(preview)` → `yandexEmbedUrls()`: плеер, который Яндекс встраивает (`"embedUrl"` и iframe
+     внутри `yastatic …/iframe-default.html#html=…`) — напр. `ppembed.com/embed/42568`, `p0sembed.com/embed/…`,
+     `www.pornhub.com/embed/…`, `noodlemagazine.net/player/…`, `5xxx-embed.weirdcdn.com/…`, `www.ebalka.video/embed/…`.
+  2. HTML плеера запрашивается с `Referer: https://yastatic.net/` (`withYandexReferer()`; часть плееров без него — 403).
+  3. Ссылки: сначала `playerjsFiles()` (KVS `video_url`/`video_alt_url` целиком, с токеном после `.mp4/`;
+     Playerjs `file:"[метка]./путь or …"`, `./` — от корня сайта), затем `discoverGeneric()` по HTML
+     с раскрытым `\/` (JSON-экранирование, напр. `mediaDefinitions` PornHub).
+  4. Фоновые вкладки: embed-страница, затем сама preview-страница (ожидание свободного `embedTabBusy`).
+  - Свой бюджет 30 с (`yandexBudget()`), отдельно от 60 с на источник.
+  - Найденные файлы получают `variant.referer` = origin плеера → `referer-rules.ts` подставляет его
+    в собственные запросы расширения (проверка и плеер).
+  - `sourceUrl` при успехе через Яндекс не меняется на адрес редиректа (обычно парковка `ww16.…`).
 
 ### Общий механизм (`src/discovery.ts`)
 - `discoverGeneric()`: `<video>` теги, `<a href>` с медиа-URL, `og:video` meta, JSON-LD `VideoObject`, `discoverEmbedded()`
@@ -262,6 +282,7 @@ C:\Users\Admin\AppData\Roaming\videoqueue-host\   Развёрнутый хос�
 tests/
 ├── core.test.ts           mergeCandidate, matches, enqueue, exportPlaylist
 ├── discovery.test.ts      discoverGeneric, discoverYandex
+├── yandex-preview.test.ts yandexPreviewUrl, yandexEmbedUrls, playerjsFiles (KVS/Playerjs)
 ├── resolver.test.ts       resolveVideo (mock fetch)
 ├── rutube.test.ts         rutubeStreams
 ├── ok.test.ts             okStreams

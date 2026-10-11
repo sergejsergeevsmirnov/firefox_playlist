@@ -9,6 +9,7 @@ import { dzenPageUrl } from './dzen';
 import { okPageUrl } from './ok';
 import { captureOrigins, sourceIdentity, isVimeoChildManifest, vimeoIdentity, vkIdentity, youtubeIdentity } from './capture-policy';
 import { nativeDownload, nativeCleanup, nativePing, nativeStatus, nativeGetProxy, nativeSetProxy } from './native';
+import { restoreReferers } from './referer-rules';
 
 let state: State = emptyState();
 let sessions: Record<number, Session> = {};
@@ -57,6 +58,8 @@ const ready = Promise.all([browser.storage.local.get('state'), browser.storage.s
   await refreshBroadAccess();
   state = restoreState(local.state); sessions = transient.sessions ?? {};
   state.filters = quickFilters(state.filters);
+  // Hotlink-protected files keep playing after a restart: re-apply their recorded Referers.
+  restoreReferers(Object.values(state.videos).flatMap(video => video.variants));
   for (const video of Object.values(state.videos)) {
     if (video.status === 'ready') continue;
     const missing: string[] = [];
@@ -137,6 +140,10 @@ function schedule(id: string, tab?: number, token?: string, allowBrowser = false
           changedDuringCheck = true; return;
         }
         Object.assign(state.videos[id], result);
+        // A check replaces the variants; keep this video's own Yandex preview URL for later re-checks.
+        for (const v of snapshot.variants) {
+          if (isYandexVideo(v.url) && !state.videos[id].variants.some(x => x.url === v.url)) state.videos[id].variants.push(v);
+        }
         const blocked = Object.values(sessions).flatMap(s => s.previewUrls ?? []);
         state.videos[id].variants = state.videos[id].variants.filter(v => (!isPreviewUrl(v.url) || isYandexVideo(v.url)) && !blocked.includes(v.url));
         if (state.videos[id].status === 'ready' && !state.videos[id].variants.length) {
@@ -269,7 +276,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
         session.previewUrls = [...new Set([...(session.previewUrls ?? []), ...previews])];
         for (const [id, video] of Object.entries(state.videos)) {
           const hadVariants = video.variants.length > 0;
-          video.variants = video.variants.filter(v => !session.previewUrls!.includes(v.url) && !isPreviewUrl(v.url));
+          // Yandex preview pages (/video/preview/{id}) are the video's fallback source, not a thumbnail.
+          video.variants = video.variants.filter(v => !session.previewUrls!.includes(v.url) && (!isPreviewUrl(v.url) || isYandexVideo(v.url)));
           if (hadVariants && !video.variants.length) {
             state.queue = state.queue.filter(x => x !== id);
             if (video.discovery !== 'catalog') delete state.videos[id];
@@ -352,7 +360,8 @@ async function handleUI(message: { type: string; [key: string]: any }): Promise<
       const video = state.videos[message.id]; if (!video) return { ok: false };
       autoRetryState.delete(message.id); // Reset auto-retry count on manual retry.
       await mutate(() => { video.status = 'checking'; video.reason = undefined; video.requiredOrigins = [];
-        if (message.refresh) video.variants = [];
+        // Drop stale stream URLs, but keep the Yandex preview page: it is the fallback source.
+        if (message.refresh) video.variants = video.variants.filter(v => isYandexVideo(v.url));
       });
       schedule(video.id, undefined, undefined, message.allowBrowser === true, message.vkForeground === true); return { ok: true };
     }

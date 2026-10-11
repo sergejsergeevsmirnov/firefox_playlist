@@ -25,6 +25,9 @@ firefox_videoplaylist/
 │   │
 │   ├── discovery.ts               Поиск видео в DOM и JSON-LD
 │   │                               discoverGeneric, discoverYandex, discoverEmbedded
+│   │                               yandexPreviewUrl(), yandexEmbedUrls() — fallback через Яндекс
+│   ├── referer-rules.ts           Referer для hotlink-защищённых файлов (variant.referer):
+│   │                               webRequest только для собственных запросов расширения
 │   ├── manifests.ts               parseHls(), parseDash() — анализ манифестов
 │   │
 │   ├── rutube.ts                  Rutube: API /play/options/{id}
@@ -40,6 +43,8 @@ firefox_videoplaylist/
 │   │                               Выбирает провайдер → resolveStreams() → probeFile()
 │   │                               readEmbedPlayer: фоновая вкладка; last-resort для всех
 │   │                               сайтов (включая те, где embed-iframe не дали результата)
+│   │                               resolveYandexPreview: плеер из preview-страницы Яндекса,
+│   │                               playerjsFiles() (KVS/Playerjs), withYandexReferer()
 │   ├── background.ts              Service worker: state, sessions, TaskPool
 │   │                               onMessage, schedule(), scheduleAutoRetry()
 │   │                               cdnFetch: прокси CDN-запросов для phncdn.com

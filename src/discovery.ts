@@ -161,6 +161,30 @@ export function isYandexVideo(url: string): boolean {
   const u = new URL(url);
   return (/(^|\.)yandex\.(ru|com|by|kz|uz|com\.tr)$/.test(u.hostname) || /(^|\.)ya\.ru$/.test(u.hostname)) && /^\/video(?:\/|$)/.test(u.pathname);
 }
+/** Short form of a Yandex preview page URL: https://yandex.ru/video/preview/{id}. */
+export function yandexPreviewUrl(url: string | undefined | null): string | undefined {
+  if (!url) return;
+  try {
+    if (!isYandexVideo(url)) return;
+    const u = new URL(url);
+    const id = /^\/video\/preview\/(\d+)/.exec(u.pathname)?.[1];
+    return id ? `https://${u.hostname}/video/preview/${id}` : undefined;
+  } catch { return; }
+}
+/** Player pages Yandex embeds for a video, from the static HTML of its preview page: the
+ *  structured-data "embedUrl" and the iframe inside yastatic iframe-default.html#html=<iframe src="…">. */
+export function yandexEmbedUrls(html: string): string[] {
+  const found: string[] = [];
+  const add = (raw: string | undefined) => {
+    const url = httpUrl(raw?.replace(/\\u002F/gi, '/').replace(/\\\//g, '/').replace(/&amp;/g, '&'));
+    if (url && !isYandexVideo(url) && !/(^|\.)yastatic\.net$/.test(new URL(url).hostname) && !found.includes(url)) found.push(url);
+  };
+  for (const m of html.matchAll(/"embedUrl"\s*:\s*"([^"]+)"/g)) add(m[1]);
+  for (const m of html.matchAll(/iframe-default\.html#html=([^"'&\s]+)/g)) {
+    try { add(/src="([^"]+)"/.exec(decodeURIComponent(m[1]))?.[1]); } catch { /* malformed escape */ }
+  }
+  return found.slice(0, 3);
+}
 function stripMobileSubdomain(url: string): string {
   try {
     const p = new URL(url);
@@ -204,9 +228,11 @@ export function discoverYandex(doc: Document, pageUrl: string): Candidate[] {
     // Save the Yandex preview URL as a fallback variant so the resolver can open it in a
     // background tab when the external source URL is gone or blocked. Yandex always has a
     // working player URL (its own CDN or an embed service like p0sembed.com).
+    // Stored in the short form /video/preview/{id}: search parameters (parent-reqid, text) differ
+    // between searches, the id alone identifies this card's video.
     const yandexPreviewHref = [...card.querySelectorAll('a[href]')]
-      .map(a => httpUrl(a.getAttribute('href'), pageUrl))
-      .find(u => !!u && isYandexVideo(u) && /\/video\/preview\//.test(u));
+      .map(a => yandexPreviewUrl(httpUrl(a.getAttribute('href'), pageUrl)))
+      .find(Boolean);
     const variants: Variant[] = yandexPreviewHref ? [{ url: yandexPreviewHref, format: 'file' }] : [];
     found.push({ sourceUrl: source, identity: `page:${source}`, title, duration, expectedDuration: duration, discovery: 'catalog',
       thumbnail: httpUrl(image?.getAttribute('src') || image?.getAttribute('data-src') || card.querySelector('video[poster]')?.getAttribute('poster'), pageUrl), variants });
