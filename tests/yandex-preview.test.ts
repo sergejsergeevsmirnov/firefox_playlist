@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { discoverYandex, yandexEmbedUrls, yandexPreviewUrl } from '../src/discovery';
-import { playerjsFiles } from '../src/resolver';
+import { kvsRealUrl, playerjsFiles } from '../src/resolver';
 const parse = (html: string) => new DOMParser().parseFromString(html, 'text/html');
 const card = (id: string, source: string, title: string) => `
   <div class="VideoSnippet">
@@ -39,6 +39,18 @@ describe('Yandex preview fallback', () => {
       'https://5xxx-embed.weirdcdn.com/common/mp4/video.mp4?q=480&v=34127&sg=1&vurl=x',
     ]);
     expect(playerjsFiles('file:"#2aGVsbG8="', 'https://a.example/')).toEqual([]);
+  });
+  it('decodes obfuscated KVS "function/0/" URLs with the license code', () => {
+    // Live values (black-porn.xyz/embed/977, mir-anala.com/embed/220): raw → 404, decoded → 206 video/mp4.
+    expect(kvsRealUrl('function/0/https://www.black-porn.xyz/get_file/3/97e91b2082d91b763fc23734ebe4e8fbba3b62c32e/0/977/977.mp4/?embed=true', '$597888619725391'))
+      .toBe('https://www.black-porn.xyz/get_file/3/e8c7b612749eb3beef207bd32983f491ba3b62c32e/0/977/977.mp4/?embed=true');
+    expect(kvsRealUrl('function/0/https://www.mir-anala.com/get_file/3/18335bb04047723b935cda057c3578258745be7a8b/0/220/220.mp4/?embed=true', '$528771017445079'))
+      .toBe('https://www.mir-anala.com/get_file/3/539b2533c80da53041b57b3074577c828745be7a8b/0/220/220.mp4/?embed=true');
+    expect(kvsRealUrl('https://a.example/get_file/1/x/1.mp4/', '')).toBe('https://a.example/get_file/1/x/1.mp4/');
+    expect(kvsRealUrl('function/0/https://a.example/get_file/3/short/0/1/1.mp4/', '$597888619725391')).toBeUndefined();
+    const html = `video_url: 'function/0/https://www.mir-anala.com/get_file/3/18335bb04047723b935cda057c3578258745be7a8b/0/220/220.mp4/?embed=true', license_code: '$528771017445079'`;
+    expect(playerjsFiles(html, 'https://www.mir-anala.com/embed/220').map(v => v.url))
+      .toEqual(['https://www.mir-anala.com/get_file/3/539b2533c80da53041b57b3074577c828745be7a8b/0/220/220.mp4/?embed=true']);
   });
   it('keeps KVS flashvars URLs whole, access token included', () => {
     const html = `<script>var flashvars = { video_id: '263249',

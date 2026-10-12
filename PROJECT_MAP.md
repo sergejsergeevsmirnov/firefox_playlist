@@ -130,6 +130,7 @@ player.ts         ← core.ts, model.ts, ui.ts
      `www.pornhub.com/embed/…`, `noodlemagazine.net/player/…`, `5xxx-embed.weirdcdn.com/…`, `www.ebalka.video/embed/…`.
   2. HTML плеера запрашивается с `Referer: https://yastatic.net/` (`withYandexReferer()`; часть плееров без него — 403).
   3. Ссылки: сначала `playerjsFiles()` (KVS `video_url`/`video_alt_url` целиком, с токеном после `.mp4/`;
+     обфусцированные `function/0/…` расшифровываются `kvsRealUrl()` по `license_code`;
      Playerjs `file:"[метка]./путь or …"`, `./` — от корня сайта), затем `discoverGeneric()` по HTML
      с раскрытым `\/` (JSON-экранирование, напр. `mediaDefinitions` PornHub).
   4. Фоновые вкладки: embed-страница, затем сама preview-страница (ожидание свободного `embedTabBusy`).
@@ -282,7 +283,7 @@ C:\Users\Admin\AppData\Roaming\videoqueue-host\   Развёрнутый хос�
 tests/
 ├── core.test.ts           mergeCandidate, matches, enqueue, exportPlaylist
 ├── discovery.test.ts      discoverGeneric, discoverYandex
-├── yandex-preview.test.ts yandexPreviewUrl, yandexEmbedUrls, playerjsFiles (KVS/Playerjs)
+├── yandex-preview.test.ts yandexPreviewUrl, yandexEmbedUrls, playerjsFiles, kvsRealUrl
 ├── resolver.test.ts       resolveVideo (mock fetch)
 ├── rutube.test.ts         rutubeStreams
 ├── ok.test.ts             okStreams

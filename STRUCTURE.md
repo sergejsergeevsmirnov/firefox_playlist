@@ -44,7 +44,8 @@ firefox_videoplaylist/
 │   │                               readEmbedPlayer: фоновая вкладка; last-resort для всех
 │   │                               сайтов (включая те, где embed-iframe не дали результата)
 │   │                               resolveYandexPreview: плеер из preview-страницы Яндекса,
-│   │                               playerjsFiles() (KVS/Playerjs), withYandexReferer()
+│   │                               playerjsFiles() (KVS/Playerjs), kvsRealUrl() (KVS function/0/),
+│   │                               withYandexReferer()
 │   ├── background.ts              Service worker: state, sessions, TaskPool
 │   │                               onMessage, schedule(), scheduleAutoRetry()
 │   │                               cdnFetch: прокси CDN-запросов для phncdn.com

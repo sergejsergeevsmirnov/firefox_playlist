@@ -371,10 +371,39 @@ async function withYandexReferer<T>(url: string, run: () => Promise<T>): Promise
   browser.webRequest.onBeforeSendHeaders.addListener(listener, { urls: [originPattern(url)], tabId: -1 }, ['blocking', 'requestHeaders']);
   try { return await run(); } finally { browser.webRequest.onBeforeSendHeaders.removeListener(listener); }
 }
+/** KVS obfuscates `video_url: 'function/0/https://…/get_file/3/<hash>/…'`: its player permutes the
+ *  first 32 hash characters with a key derived from `license_code` (same algorithm as yt-dlp's
+ *  generic extractor). The undecoded URL answers 404. */
+export function kvsRealUrl(videoUrl: string, licenseCode: string): string | undefined {
+  if (!videoUrl.startsWith('function/0/')) return videoUrl;
+  const license = licenseCode.replace('$', '');
+  if (!/^\d{8,}$/.test(license)) return;
+  const values = [...license].map(Number);
+  const mod = license.replace(/0/g, '1');
+  const center = Math.floor(mod.length / 2);
+  const key = String(4 * Math.abs(Number(mod.slice(0, center + 1)) - Number(mod.slice(center)))).slice(0, center + 1);
+  const token = [...key].map(Number).flatMap((current, index) => [0, 1, 2, 3].map(offset => (values[index + offset] + current) % 10));
+  try {
+    const url = new URL(videoUrl.slice('function/0/'.length));
+    const parts = url.pathname.split('/');
+    const hash = parts[3] ?? '';
+    if (hash.length < 32 || token.length < 32 || token.some(Number.isNaN)) return;
+    const indices = [...Array(32).keys()];
+    let accum = 0;
+    for (let src = 31; src >= 0; src--) {
+      accum += token[src];
+      const dest = (src + accum) % 32;
+      [indices[src], indices[dest]] = [indices[dest], indices[src]];
+    }
+    parts[3] = indices.map(i => hash[i]).join('') + hash.slice(32);
+    url.pathname = parts.join('/');
+    return url.href;
+  } catch { return; }
+}
 /** Sources from common embed player configs, read whole (the generic media URL scan cuts them):
  *  - KVS flashvars `video_url: '…/263249.mp4/?v-acctoken=…'`, `video_alt_url…` — the access
  *    token after ".mp4/" is required (without it the file answers 404). Obfuscated
- *    "function/0/…" values are skipped.
+ *    "function/0/…" values are decoded with the page's `license_code` (kvsRealUrl).
  *  - Playerjs `file: "[480p]./path.mp4 or ./alt.mp4,[720p]…"`; a "./" path is resolved by the
  *    player from the site root (5xxx-embed.weirdcdn.com/common/mp4/video.mp4?…), not from the
  *    page directory. Encrypted Playerjs strings (starting with "#") are skipped. */
@@ -386,7 +415,11 @@ export function playerjsFiles(html: string, base: string): Variant[] {
     const format = mediaFormat(url);
     if (format || !needsMediaPath) found.set(url, { url, format: format ?? 'file' });
   };
-  for (const m of html.matchAll(/\bvideo_(?:alt_)?url\d*\s*:\s*'(https?:\/\/[^']+)'/g)) add(m[1], false);
+  const license = /\blicense_code\s*:\s*'([^']+)'/.exec(html)?.[1] ?? '';
+  for (const m of html.matchAll(/\bvideo_(?:alt_)?url\d*\s*:\s*'((?:function\/0\/)?https?:\/\/[^']+)'/g)) {
+    const url = kvsRealUrl(m[1], license);
+    if (url) add(url, false);
+  }
   for (const m of html.matchAll(/\bfile\s*[:=]\s*["']([^"'#][^"']*)["']/g)) {
     for (const part of m[1].split(/\s+or\s+|,(?=\[)/)) add(part.replace(/^\[[^\]]*\]/, ''), true);
   }
